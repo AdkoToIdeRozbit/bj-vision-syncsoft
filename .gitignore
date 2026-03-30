@@ -7,5 +7,12 @@ wheels/
 *.egg-info
 .pytest_cache/
 
+#. Environment variables
+.env
+
 # Virtual environments
 .venv
+
+# Terraform files (use in local only, not to be committed to version control)
+terraform/
+
