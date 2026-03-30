@@ -1,4 +1,5 @@
 from app.vision.processor import (
+    LiveVideoProcessor,
     VisionConfig,
     build_vision_config,
     load_card_templates,
@@ -7,6 +8,7 @@ from app.vision.processor import (
 )
 
 __all__ = [
+    "LiveVideoProcessor",
     "VisionConfig",
     "build_vision_config",
     "load_card_templates",

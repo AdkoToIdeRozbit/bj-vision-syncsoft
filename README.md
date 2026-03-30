@@ -34,8 +34,9 @@ This repository provides:
 │   ├── models.py                # SQLModel models and enums
 │   ├── routes/
 │   │   ├── deps.py              # DB session dependency
-│   │   ├── tasks.py             # Upload + status API + background worker
-│   │   └── game_sessions.py     # Game session list + CSV export endpoints
+│   │   ├── game_sessions.py     # Game session list + CSV export endpoints
+│   │   ├── stream.py            # WebSocket streaming endpoint
+│   │   └── tasks.py             # Upload + status API + background worker
 │   ├── vision/
 │   │   ├── processor.py         # Card detection logic (OpenCV)
 │   │   └── template-images/     # Card and replay-button templates
@@ -136,6 +137,16 @@ All endpoints require an `X-API-Key` header matching the `API_KEY` environment v
     - `csv_file_url`
     - `result`
 
+### Stream
+
+- `WS /api/stream`
+  - Connect via WebSocket to stream individual image frames (as binary bytes like JPEG or PNG) for real-time card detection.
+  - Query parameters:
+    - `profile` — resolution profile: `480p` (default) or `4k` (not recommend video resolution higher than 720p)
+    - `lookback` — sets how many frames back to inspect when the replay button is detected (default: 2, optimized for ~10fps streams).
+  - Emits JSON payloads over the socket in real-time as `blackjack_game_session` rows are detected and saved. 
+  - Status updates are also provided (e.g. `{"type": "status", "status": "processing"}`).
+
 ### Game Sessions
 
 - `GET /api/game-sessions`
@@ -165,6 +176,13 @@ Resolution profiles and their ROI defaults are defined in `app/vision/processor.
 | `4k`    | `1000,1020,1150,1150` | `1070,560,1300,593` |
 
 The standalone CLI script `scripts/pattern-matching.py` uses the same detection logic and can be run independently for debugging or batch processing.
+
+## Scripts & Utilities
+
+See the [`scripts/README.md`](scripts/README.md) for offline testing flows, template matching calibration, and live stream simulation utilities.
+
+*   `scripts/ws_stream_video.py`: Simulates live WebSocket streaming frames to test real-time card detection.
+*   `scripts/pattern-matching.py`: Standalone CLI tool to debug ROIs and output results offline.
 
 ## Notes and Limitations
 

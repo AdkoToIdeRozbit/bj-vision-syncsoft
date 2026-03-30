@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -44,6 +45,7 @@ class VisionConfig:
     )
 
     card_threshold: float = 0.8
+    lookback: int = 5
 
 
 # Hard-coded ROI defaults per resolution profile.
@@ -92,6 +94,7 @@ def build_vision_config(
     profile: ProfileName,
     replay_threshold: float = 0.8,
     card_threshold: float = 0.8,
+    lookback: int = 5,
 ) -> VisionConfig:
     """Build a VisionConfig for the given resolution profile."""
     defaults = _PROFILE_DEFAULTS[profile]
@@ -105,6 +108,7 @@ def build_vision_config(
         dealer_roi=defaults["dealer_roi"],
         player_rois=defaults["player_rois"],
         card_threshold=card_threshold,
+        lookback=lookback,
     )
 
 
@@ -214,39 +218,48 @@ def _detect_cards_for_session(
 ) -> dict | None:
     """Detect dealer and player cards in a single session-ending frame.
 
-    Returns a result dict, or ``None`` if no dealer cards were detected
-    (treated as a false-positive replay trigger).
+    Dealer detection runs first — if no dealer cards are found the frame is
+    treated as a false-positive replay trigger and ``None`` is returned early.
+    Once dealer cards are confirmed, all 7 player ROIs are checked concurrently
+    via a thread pool (cv2.matchTemplate releases the GIL).
     """
     session_result: dict = {"frame": frame_idx}
 
-    # Dealer cards
+    # Dealer runs first — gates player detection to avoid false positives
     if config.dealer_roi is not None:
         dealer_cards = detect_cards_in_roi(
             frame, config.dealer_roi, dealer_templates, config.card_threshold
         )
         session_result["dealer"] = dealer_cards
-
         if not dealer_cards:
-            # Likely a false replay detection — skip this session
             return None
-
         logger.debug("Dealer cards: %s", dealer_cards)
     else:
         session_result["dealer"] = []
         logger.debug("Dealer ROI not configured, skipping")
 
-    # Player cards (1–7)
+    # Player detections run concurrently now that dealer is confirmed
+    player_tasks: dict[str, tuple[int, int, int, int]] = {
+        f"player_{i}": roi
+        for i in range(1, 8)
+        if (roi := config.player_rois.get(f"player_{i}")) is not None
+    }
+
+    def _detect_player(roi: tuple[int, int, int, int]) -> list[str]:
+        return detect_cards_in_roi(frame, roi, player_templates, config.card_threshold)
+
+    with ThreadPoolExecutor(max_workers=len(player_tasks) or 1) as executor:
+        futures = {
+            key: executor.submit(_detect_player, roi)
+            for key, roi in player_tasks.items()
+        }
+        player_results = {key: fut.result() for key, fut in futures.items()}
+
     for i in range(1, 8):
         key = f"player_{i}"
-        player_roi = config.player_rois.get(key)
-        if player_roi is not None:
-            player_cards = detect_cards_in_roi(
-                frame, player_roi, player_templates, config.card_threshold
-            )
-            session_result[key] = player_cards
-            logger.debug("Player %d cards: %s", i, player_cards)
-        else:
-            session_result[key] = []
+        session_result[key] = player_results.get(key, [])
+        if session_result[key]:
+            logger.debug("Player %d cards: %s", i, session_result[key])
 
     return session_result
 
@@ -254,6 +267,79 @@ def _detect_cards_for_session(
 # ---------------------------------------------------------------------------
 # Main video processing
 # ---------------------------------------------------------------------------
+
+
+class LiveVideoProcessor:
+    """Stateful processor for continuous frame-by-frame analysis."""
+
+    def __init__(
+        self,
+        config: VisionConfig,
+        dealer_templates: list[tuple[str, np.ndarray]],
+        player_templates: list[tuple[str, np.ndarray]],
+    ):
+        self.config = config
+        self.dealer_templates = dealer_templates
+        self.player_templates = player_templates
+
+        self.replay_template_img = cv2.imread(self.config.replay_template, cv2.IMREAD_GRAYSCALE)
+        if self.replay_template_img is None:
+            raise FileNotFoundError(
+                f"Could not read replay template: {self.config.replay_template}"
+            )
+
+        self.LOOKBACK = self.config.lookback
+        self.buffer: deque[tuple[int, np.ndarray]] = deque(maxlen=self.LOOKBACK + 1)
+
+        self.frame_index = 0
+        self.session_num = 1
+        self.replay_active = False
+
+    def process_frame(self, frame: np.ndarray) -> dict | None:
+        """Process a single incoming frame and return a session dict if detected."""
+        self.buffer.append((self.frame_index, frame.copy()))
+
+        if self.config.replay_roi is not None:
+            x1, y1, x2, y2 = self.config.replay_roi
+            search_region = frame[y1:y2, x1:x2]
+        else:
+            search_region = frame
+
+        gray_region = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
+        match_result = cv2.matchTemplate(
+            gray_region, self.replay_template_img, cv2.TM_CCOEFF_NORMED
+        )
+        _, max_val, _, _ = cv2.minMaxLoc(match_result)
+
+        session_result_out = None
+
+        if max_val >= self.config.replay_threshold and not self.replay_active:
+            self.replay_active = True
+            target_idx, target_frame = self.buffer[0]
+
+            session_result = _detect_cards_for_session(
+                target_idx,
+                target_frame,
+                self.config,
+                self.dealer_templates,
+                self.player_templates,
+            )
+
+            if session_result is not None:
+                logger.info(
+                    "Session %d: replay at frame %d, cards detected at frame %d",
+                    self.session_num,
+                    self.frame_index,
+                    target_idx,
+                )
+                session_result_out = {"session": self.session_num, **session_result}
+                self.session_num += 1
+
+        elif max_val < self.config.replay_threshold and self.replay_active:
+            self.replay_active = False
+
+        self.frame_index += 1
+        return session_result_out
 
 
 def process_video(
@@ -272,11 +358,7 @@ def process_video(
     - ``"dealer"``: list of detected dealer card name stems
     - ``"player_1"`` … ``"player_7"``: list of detected card name stems (empty if ROI not configured)
     """
-    replay_template_img = cv2.imread(config.replay_template, cv2.IMREAD_GRAYSCALE)
-    if replay_template_img is None:
-        raise FileNotFoundError(
-            f"Could not read replay template: {config.replay_template}"
-        )
+    processor = LiveVideoProcessor(config, dealer_templates, player_templates)
 
     cap = cv2.VideoCapture(config.video_path)
     if not cap.isOpened():
@@ -302,59 +384,16 @@ def process_video(
         config.card_threshold,
     )
 
-    LOOKBACK = 5
-    buffer: deque[tuple[int, np.ndarray]] = deque(maxlen=LOOKBACK + 1)
     results: list[dict] = []
-
-    frame_index = 0
-    session_num = 1
-    replay_active = False
 
     while cap.isOpened():
         ok, frame = cap.read()
         if not ok:
             break
 
-        buffer.append((frame_index, frame.copy()))
-
-        if config.replay_roi is not None:
-            x1, y1, x2, y2 = config.replay_roi
-            search_region = frame[y1:y2, x1:x2]
-        else:
-            search_region = frame
-
-        gray_region = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
-        match_result = cv2.matchTemplate(
-            gray_region, replay_template_img, cv2.TM_CCOEFF_NORMED
-        )
-        _, max_val, _, _ = cv2.minMaxLoc(match_result)
-
-        if max_val >= config.replay_threshold and not replay_active:
-            replay_active = True
-            target_idx, target_frame = buffer[0]
-
-            session_result = _detect_cards_for_session(
-                target_idx,
-                target_frame,
-                config,
-                dealer_templates,
-                player_templates,
-            )
-
-            if session_result is not None:
-                logger.info(
-                    "Session %d: replay at frame %d, cards detected at frame %d",
-                    session_num,
-                    frame_index,
-                    target_idx,
-                )
-                results.append({"session": session_num, **session_result})
-                session_num = len(results) + 1
-
-        elif max_val < config.replay_threshold and replay_active:
-            replay_active = False
-
-        frame_index += 1
+        result = processor.process_frame(frame)
+        if result is not None:
+            results.append(result)
 
     cap.release()
     return results
