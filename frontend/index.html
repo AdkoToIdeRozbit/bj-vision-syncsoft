@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blackjack Vision Stream Test</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --panel-bg: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --success: #10b981;
+            --danger: #ef4444;
+            --border: #334155;
+            --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-family);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        header {
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1rem;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        p.subtitle {
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+            font-size: 0.95rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 900px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background-color: var(--panel-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            margin-bottom: 1.2rem;
+            color: var(--text-main);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.75rem;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.4rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            background-color: #0f172a;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        button {
+            width: 100%;
+            padding: 0.75rem;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-top: 0.5rem;
+        }
+
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+
+        button:disabled {
+            background-color: var(--border);
+            color: var(--text-muted);
+            cursor: not-allowed;
+        }
+
+        button.danger {
+            background-color: var(--danger);
+        }
+        button.danger:hover {
+            background-color: #dc2626;
+        }
+
+        .video-container {
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 16 / 9;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 0.3rem 0.75rem;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.1);
+            margin-bottom: 1rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .status-badge.connected .status-dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+        .status-badge.error .status-dot { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+
+        .results-box {
+            margin-top: 1.5rem;
+            background: #0f172a;
+            border-radius: 6px;
+            padding: 1rem;
+            border: 1px solid var(--border);
+            min-height: 150px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: inherit;
+        }
+
+        .result-item {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .result-item:last-child {
+            border-bottom: none;
+        }
+
+        .result-title {
+            color: var(--primary);
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        
+        .result-details {
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        .metrics {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            justify-content: space-between;
+        }
+
+        /* Hidden canvas for extracting frames */
+        #captureCanvas {
+            display: none;
+        }
+
+        .file-upload-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+
+        .file-upload-wrapper input[type=file] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+        }
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Blackjack Stream Test</h1>
+            <p class="subtitle">Stream video frames via WebSocket to the server for live card detection.</p>
+        </header>
+
+        <div class="grid">
+            <div class="sidebar">
+                <div class="panel">
+                    <h2>Connection Settings</h2>
+                    
+                    <div class="form-group">
+                        <label>WebSocket URL</label>
+                        <input type="text" id="wsUrl" value="ws://localhost:8000/api/stream">
+                    </div>
+
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="text" id="apiKey" value="changethis">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Resolution Profile</label>
+                        <select id="profile">
+                            <option value="480p">480p</option>
+                            <option value="4k">4K</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Lookback (frames)</label>
+                        <input type="number" id="lookback" value="2" min="1" max="10">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Stream FPS</label>
+                        <input type="number" id="streamFps" value="15" min="1" max="60">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Frame Quality (0.1 – 1.0)</label>
+                        <input type="number" id="frameQuality" value="0.8" min="0.1" max="1.0" step="0.1">
+                    </div>
+
+                    <div class="form-group" style="margin-top: 1.5rem">
+                        <div class="file-upload-wrapper">
+                            <button class="btn-outline" id="fileBtnText">Select Target Video File</button>
+                            <input type="file" id="videoFile" accept="video/mp4,video/x-m4v,video/*" />
+                        </div>
+                    </div>
+
+                    <button id="connectBtn">Connect & Start Stream</button>
+                    <button id="disconnectBtn" class="danger" style="display: none;">Stop & Disconnect</button>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <div class="panel">
+                    <div class="status-badge" id="statusBadge">
+                        <div class="status-dot"></div>
+                        <span id="statusText">Disconnected</span>
+                    </div>
+
+                    <div class="video-container">
+                        <video id="videoPlayer" controls muted playsinline></video>
+                    </div>
+                    
+                    <div class="metrics">
+                        <span id="fpsCounter">FPS: 0</span>
+                        <span id="frameCounter">Frames processed: 0</span>
+                    </div>
+
+                    <div class="results-box" id="resultsBox">
+                        <div style="color: var(--text-muted); text-align: center; margin-top: 3rem;">
+                            Waiting for results...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden canvas to dump video frames to image blob -->
+    <canvas id="captureCanvas"></canvas>
+
+    <script>
+        const DOM = {
+            wsUrl: document.getElementById('wsUrl'),
+            apiKey: document.getElementById('apiKey'),
+            profile: document.getElementById('profile'),
+            lookback: document.getElementById('lookback'),
+            videoFile: document.getElementById('videoFile'),
+            fileBtnText: document.getElementById('fileBtnText'),
+            connectBtn: document.getElementById('connectBtn'),
+            disconnectBtn: document.getElementById('disconnectBtn'),
+            statusBadge: document.getElementById('statusBadge'),
+            statusText: document.getElementById('statusText'),
+            videoPlayer: document.getElementById('videoPlayer'),
+            resultsBox: document.getElementById('resultsBox'),
+            fpsCounter: document.getElementById('fpsCounter'),
+            frameCounter: document.getElementById('frameCounter'),
+            captureCanvas: document.getElementById('captureCanvas'),
+            streamFps: document.getElementById('streamFps'),
+            frameQuality: document.getElementById('frameQuality')
+        };
+
+        const ctx = DOM.captureCanvas.getContext('2d', { willReadFrequently: true });
+        
+        let ws = null;
+        let isStreaming = false;
+        let streamInterval = null;
+        let framesSent = 0;
+        let lastFrameTime = performance.now();
+        let fps = 0;
+
+        // Video selection
+        DOM.videoFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            DOM.fileBtnText.textContent = file.name;
+            const fileURL = URL.createObjectURL(file);
+            DOM.videoPlayer.src = fileURL;
+        });
+
+        function setStatus(status, text) {
+            DOM.statusBadge.className = `status-badge ${status}`;
+            DOM.statusText.textContent = text;
+        }
+
+        function appendResult(data) {
+            if (DOM.resultsBox.children.length > 0 && DOM.resultsBox.children[0].tagName !== 'DIV') {
+                DOM.resultsBox.innerHTML = ''; // clear waiting
+            }
+
+            const item = document.createElement('div');
+            item.className = 'result-item';
+
+            // Format card arrays to readable strings
+            const formatCards = (cards) => {
+                if (!cards || cards.length === 0) return 'None';
+                return cards.join(', ');
+            };
+
+            let playersHtml = '';
+            for(let i=1; i<=7; i++) {
+                const pCards = data.data[`player${i}_cards`];
+                if (pCards && pCards.length > 0) {
+                    playersHtml += `<br/>Player ${i}: ${formatCards(pCards)}`;
+                }
+            }
+
+            item.innerHTML = `
+                <div class="result-title">Session: ${data.session_number} | Frame: ${data.frame_index}</div>
+                <div class="result-details">
+                    Dealer: <strong>${formatCards(data.data.dealer_cards)}</strong>
+                    ${playersHtml}
+                </div>
+            `;
+            
+            DOM.resultsBox.prepend(item);
+            
+            // Keep only latest 20 Results
+            if (DOM.resultsBox.children.length > 20) {
+                DOM.resultsBox.removeChild(DOM.resultsBox.lastChild);
+            }
+        }
+
+        async function processFrame() {
+            if (!isStreaming || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (DOM.videoPlayer.paused || DOM.videoPlayer.ended) {
+                // If video paused, we can wait or just keep sending static frames. Let's send 1 frame per 100ms when playing.
+                setTimeout(processFrame, 100);
+                return;
+            }
+
+            // Ensure canvas matches video size
+            if (DOM.captureCanvas.width !== DOM.videoPlayer.videoWidth) {
+                DOM.captureCanvas.width = DOM.videoPlayer.videoWidth;
+                DOM.captureCanvas.height = DOM.videoPlayer.videoHeight;
+            }
+
+            if (DOM.captureCanvas.width === 0) {
+                setTimeout(processFrame, 100);
+                return; // Video not ready
+            }
+
+            // Draw current frame to canvas
+            ctx.drawImage(DOM.videoPlayer, 0, 0, DOM.captureCanvas.width, DOM.captureCanvas.height);
+
+            // Convert to JPEG and send
+            DOM.captureCanvas.toBlob((blob) => {
+                if (blob && ws.readyState === WebSocket.OPEN) {
+                    ws.send(blob);
+                    
+                    framesSent++;
+                    DOM.frameCounter.textContent = `Frames: ${framesSent}`;
+                    
+                    // Simple FPS calculation
+                    const now = performance.now();
+                    const delta = now - lastFrameTime;
+                    if (delta > 1000) {
+                        fps = (framesSent - (DOM.fpsCounter.dataset.lastCount || 0)) / (delta / 1000);
+                        DOM.fpsCounter.textContent = `FPS: ${Math.round(fps)}`;
+                        DOM.fpsCounter.dataset.lastCount = framesSent;
+                        lastFrameTime = now;
+                    }
+                }
+                
+                // Target transmission rate based on user-set FPS
+                const targetFps = Math.max(1, Math.min(60, parseInt(DOM.streamFps.value, 10) || 15));
+                setTimeout(processFrame, 1000 / targetFps);
+            }, 'image/jpeg', Math.max(0.1, Math.min(1.0, parseFloat(DOM.frameQuality.value) || 0.8)));
+        }
+
+        DOM.connectBtn.addEventListener('click', () => {
+            if (!DOM.videoPlayer.src) {
+                alert("Please select a video file first.");
+                return;
+            }
+
+            const url = new URL(DOM.wsUrl.value);
+            url.searchParams.append('api_key', DOM.apiKey.value);
+            url.searchParams.append('profile', DOM.profile.value);
+            url.searchParams.append('lookback', DOM.lookback.value);
+
+            setStatus('error', 'Connecting...');
+            
+            try {
+                ws = new WebSocket(url.toString());
+                
+                ws.onopen = () => {
+                    setStatus('connected', 'Connected');
+                    DOM.connectBtn.style.display = 'none';
+                    DOM.disconnectBtn.style.display = 'block';
+                    
+                    DOM.resultsBox.innerHTML = '';
+                    isStreaming = true;
+                    framesSent = 0;
+                    DOM.fpsCounter.dataset.lastCount = 0;
+                    lastFrameTime = performance.now();
+                    
+                    if (DOM.videoPlayer.paused) {
+                        DOM.videoPlayer.play().catch(e => console.error("Auto-play prevented", e));
+                    }
+                    
+                    processFrame();
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'status') {
+                            setStatus('connected', `Processing (Task ${data.task_id})`);
+                        } else if (data.type === 'result') {
+                            appendResult(data);
+                        }
+                    } catch (e) {
+                        console.error("Failed to parse message", e);
+                    }
+                };
+
+                ws.onclose = () => {
+                    setStatus('error', 'Disconnected');
+                    stopStream();
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket Error', error);
+                    setStatus('error', 'Connection Error');
+                    stopStream();
+                };
+
+            } catch (err) {
+                alert("Invalid WebSocket URL or Connection failed.");
+                setStatus('error', 'Disconnected');
+            }
+        });
+
+        DOM.disconnectBtn.addEventListener('click', () => {
+            if (ws) {
+                ws.close();
+            }
+            stopStream();
+            DOM.videoPlayer.pause();
+        });
+
+        function stopStream() {
+            isStreaming = false;
+            ws = null;
+            DOM.connectBtn.style.display = 'block';
+            DOM.disconnectBtn.style.display = 'none';
+            DOM.fpsCounter.textContent = `FPS: 0`;
+        }
+    </script>
+</body>
+</html>
