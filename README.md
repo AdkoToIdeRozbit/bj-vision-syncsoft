@@ -43,6 +43,8 @@ This repository provides:
 │   │       ├── 480p/            # Templates for 480p video sources
 │   │       └── 4k/              # Templates for 4K video sources
 │   └── alembic/                 # Migration environment + versions
+├── frontend/
+│   └── index.html               # Mini frontend app for testing the WebSocket stream
 ├── scripts/
 │   └── pattern-matching.py      # Standalone CLI tool (same vision logic)
 ├── tests/                       # API + unit tests
@@ -176,6 +178,21 @@ Resolution profiles and their ROI defaults are defined in `app/vision/processor.
 | `4k`    | `1000,1020,1150,1150` | `1070,560,1300,593` |
 
 The standalone CLI script `scripts/pattern-matching.py` uses the same detection logic and can be run independently for debugging or batch processing.
+
+## Frontend Stream Test App
+
+A minimal, vanilla HTML/JS frontend application is included to easily test the real-time WebSocket `/api/stream` endpoint. It allows you to select a local video file, stream its frames to the backend, and displays the live card detection results in a clean UI.
+
+To use it:
+
+1. Guarantee your FastAPI backend is running (`uv run fastapi dev`).
+2. Open `frontend/index.html` directly in your web browser, or serve it using Python's built-in HTTP server:
+   ```bash
+   cd frontend
+   python -m http.server 8080
+   ```
+   Then navigate to `http://localhost:8080` in your browser.
+3. Select a sample blackjack video file and hit **Connect & Start Stream**!
 
 ## Scripts & Utilities
 

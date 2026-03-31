@@ -14,7 +14,7 @@ from app.models import (
     BlackjackTrackingTaskStatus,
     GameResult,
 )
-from app.routes.deps import APIKeyDep, SessionDep
+from app.routes.deps import SessionDep
 from app.vision import (
     LiveVideoProcessor,
     build_vision_config,
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
 
+
 @router.websocket("")
 async def stream_video_for_processing(
     websocket: WebSocket,
@@ -35,7 +36,7 @@ async def stream_video_for_processing(
     lookback: int = 2,
 ):
     if api_key != settings.API_KEY:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        await websocket.close()
         return
 
     await websocket.accept()
@@ -68,14 +69,18 @@ async def stream_video_for_processing(
             len(player_templates),
         )
 
-        processor = LiveVideoProcessor(vision_config, dealer_templates, player_templates)
+        processor = LiveVideoProcessor(
+            vision_config, dealer_templates, player_templates
+        )
 
-        await websocket.send_json({"type": "status", "task_id": task_id, "status": "processing"})
+        await websocket.send_json(
+            {"type": "status", "task_id": task_id, "status": "processing"}
+        )
 
         while True:
             # We expect bytes of an encoded image (e.g. JPEG)
             data = await websocket.receive_bytes()
-            
+
             # Decode the bytes directly to an OpenCV frame
             nparr = np.frombuffer(data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -86,7 +91,7 @@ async def stream_video_for_processing(
 
             # Process frame using a thread pool to avoid blocking the async event loop
             result = await run_in_threadpool(processor.process_frame, frame)
-            
+
             if result is not None:
                 # Save to database
                 game_result = GameResult(
@@ -108,17 +113,21 @@ async def stream_video_for_processing(
                 session.commit()
 
                 # Emit to client immediately
-                await websocket.send_json({
-                    "type": "result",
-                    "session_number": result.get("session"),
-                    "frame_index": result.get("frame"),
-                    "data": game_result.model_dump()
-                })
+                await websocket.send_json(
+                    {
+                        "type": "result",
+                        "session_number": result.get("session"),
+                        "frame_index": result.get("frame"),
+                        "data": game_result.model_dump(),
+                    }
+                )
 
     except WebSocketDisconnect:
         logger.info("Stream Task %d: WebSocket disconnected", task_id)
     except Exception as e:
-        logger.exception("Stream Task %d failed during vision processing: %s", task_id, e)
+        logger.exception(
+            "Stream Task %d failed during vision processing: %s", task_id, e
+        )
         try:
             task.status = BlackjackTrackingTaskStatus.FAILED
             task.updated_at = datetime.now(timezone.utc)

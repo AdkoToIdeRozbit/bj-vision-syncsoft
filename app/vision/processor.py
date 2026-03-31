@@ -282,7 +282,9 @@ class LiveVideoProcessor:
         self.dealer_templates = dealer_templates
         self.player_templates = player_templates
 
-        self.replay_template_img = cv2.imread(self.config.replay_template, cv2.IMREAD_GRAYSCALE)
+        self.replay_template_img = cv2.imread(
+            self.config.replay_template, cv2.IMREAD_GRAYSCALE
+        )
         if self.replay_template_img is None:
             raise FileNotFoundError(
                 f"Could not read replay template: {self.config.replay_template}"
@@ -307,7 +309,9 @@ class LiveVideoProcessor:
 
         gray_region = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
         match_result = cv2.matchTemplate(
-            gray_region, self.replay_template_img, cv2.TM_CCOEFF_NORMED
+            gray_region,
+            self.replay_template_img,  # type: ignore
+            cv2.TM_CCOEFF_NORMED,
         )
         _, max_val, _, _ = cv2.minMaxLoc(match_result)
 
