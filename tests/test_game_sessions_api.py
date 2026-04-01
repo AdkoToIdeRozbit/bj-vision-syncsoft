@@ -8,13 +8,13 @@ def _make_session(
 ):
     if result is None:
         result = {
-            "player1_cards": [CardClass.ACE, CardClass.KING],
-            "player2_cards": [CardClass.ACE, CardClass.KING],
-            "player3_cards": [CardClass.ACE, CardClass.KING],
-            "player4_cards": [CardClass.ACE, CardClass.KING],
-            "player5_cards": [CardClass.ACE, CardClass.KING],
-            "player6_cards": [CardClass.ACE, CardClass.KING],
-            "player7_cards": [CardClass.ACE, CardClass.KING],
+            "player1_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player2_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player3_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player4_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player5_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player6_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
+            "player7_cards": {"hand1": [CardClass.ACE, CardClass.KING]},
             "dealer_cards": [CardClass.TEN, CardClass.SEVEN],
         }
     gs = BlackjackGameSession(task_id=None, result=result)
@@ -55,7 +55,7 @@ def test_list_game_sessions_returns_data(client, db_session):
     item = data["items"][0]
     assert "id" in item
     assert "created_at" in item
-    assert item["result"]["player1_cards"] == [CardClass.ACE, CardClass.KING]
+    assert item["result"]["player1_cards"] == {"hand1": [CardClass.ACE, CardClass.KING]}
     assert item["result"]["dealer_cards"] == [CardClass.TEN, CardClass.SEVEN]
 
 

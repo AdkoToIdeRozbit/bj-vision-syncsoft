@@ -30,6 +30,7 @@ from app.vision import (
     build_vision_config,
     load_card_templates,
     map_card_names,
+    map_player_hands,
     process_video,
 )
 
@@ -125,13 +126,13 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
                 game_result = GameResult(
                     session_number=r.get("session"),
                     dealer_cards=map_card_names(r.get("dealer", [])),
-                    player1_cards=map_card_names(r.get("player_1", [])) or None,
-                    player2_cards=map_card_names(r.get("player_2", [])) or None,
-                    player3_cards=map_card_names(r.get("player_3", [])) or None,
-                    player4_cards=map_card_names(r.get("player_4", [])) or None,
-                    player5_cards=map_card_names(r.get("player_5", [])) or None,
-                    player6_cards=map_card_names(r.get("player_6", [])) or None,
-                    player7_cards=map_card_names(r.get("player_7", [])) or None,
+                    player1_cards=map_player_hands(r.get("player_1", {})),
+                    player2_cards=map_player_hands(r.get("player_2", {})),
+                    player3_cards=map_player_hands(r.get("player_3", {})),
+                    player4_cards=map_player_hands(r.get("player_4", {})),
+                    player5_cards=map_player_hands(r.get("player_5", {})),
+                    player6_cards=map_player_hands(r.get("player_6", {})),
+                    player7_cards=map_player_hands(r.get("player_7", {})),
                 )
                 game_session = BlackjackGameSession(
                     task_id=task_id,

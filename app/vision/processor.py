@@ -29,6 +29,22 @@ _VISION_BASE = Path(__file__).parent / "template-images"
 
 
 @dataclass
+class PlayerROIConfig:
+    """ROI configuration for a single player, supporting split-hand detection.
+
+    ``default`` covers the player's normal (un-split) hand position.
+    ``split1`` and ``split2`` are the two hand positions after a split.
+    Detection short-circuits: if ``default`` yields cards the split ROIs are
+    not checked; otherwise ``split1`` is tried and, if cards are found there,
+    ``split2`` is checked next.
+    """
+
+    default: tuple[int, int, int, int] | None = None
+    split1: tuple[int, int, int, int] | None = None
+    split2: tuple[int, int, int, int] | None = None
+
+
+@dataclass
 class VisionConfig:
     video_path: str
 
@@ -39,10 +55,8 @@ class VisionConfig:
     dealer_template_dir: str
     player_template_dir: str
     dealer_roi: tuple[int, int, int, int] | None
-    # keys: "player_1" … "player_7", value None means skip
-    player_rois: dict[str, tuple[int, int, int, int] | None] = field(
-        default_factory=dict
-    )
+    # keys: "player_1" … "player_7", None means skip that player entirely
+    player_rois: dict[str, PlayerROIConfig | None] = field(default_factory=dict)
 
     card_threshold: float = 0.8
     lookback: int = 5
@@ -62,9 +76,9 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
             "player_1": None,
             "player_2": None,
             "player_3": None,
-            "player_4": (399, 290, 407, 374),
+            "player_4": PlayerROIConfig(default=(399, 290, 407, 374)),
             "player_5": None,
-            "player_6": (525, 260, 533, 358),
+            "player_6": PlayerROIConfig(default=(525, 260, 533, 358)),
             "player_7": None,
         },
     },
@@ -75,13 +89,21 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "player_template_dir": str(_VISION_BASE / "4k" / "players"),
         "dealer_roi": (1070, 560, 1300, 593),
         "player_rois": {
-            "player_1": (1045, 1183, 1077, 1467),
-            "player_2": (1225, 1260, 1255, 1534),
-            "player_3": (1440, 1300, 1475, 1580),
-            "player_4": (1675, 1240, 1705, 1594),
-            "player_5": (1910, 1300, 1938, 1578),
-            "player_6": (2126, 1270, 2156, 1536),
-            "player_7": (2305, 1200, 2335, 1464),
+            "player_1": PlayerROIConfig(
+                default=(1045, 1183, 1077, 1467),
+                split1=(1003, 1150, 1033, 1445),
+                split2=(1090, 1200, 1120, 1490),
+            ),
+            "player_2": PlayerROIConfig(default=(1225, 1260, 1255, 1534)),
+            "player_3": PlayerROIConfig(default=(1440, 1300, 1475, 1580)),
+            "player_4": PlayerROIConfig(default=(1675, 1240, 1705, 1594)),
+            "player_5": PlayerROIConfig(default=(1910, 1300, 1938, 1578)),
+            "player_6": PlayerROIConfig(default=(2126, 1270, 2156, 1536)),
+            "player_7": PlayerROIConfig(
+                default=(2305, 1200, 2335, 1464),
+                split1=(2262, 1220, 2295, 1487),
+                split2=(2350, 1180, 2380, 1444),
+            ),
         },
     },
 }
@@ -239,25 +261,50 @@ def _detect_cards_for_session(
         logger.debug("Dealer ROI not configured, skipping")
 
     # Player detections run concurrently now that dealer is confirmed
-    player_tasks: dict[str, tuple[int, int, int, int]] = {
-        f"player_{i}": roi
+    player_tasks: dict[str, PlayerROIConfig] = {
+        f"player_{i}": roi_cfg
         for i in range(1, 8)
-        if (roi := config.player_rois.get(f"player_{i}")) is not None
+        if (roi_cfg := config.player_rois.get(f"player_{i}")) is not None
     }
 
-    def _detect_player(roi: tuple[int, int, int, int]) -> list[str]:
-        return detect_cards_in_roi(frame, roi, player_templates, config.card_threshold)
+    def _detect_player(roi_cfg: PlayerROIConfig) -> dict[str, list[str]]:
+        """Return a hands dict for one player using split-aware short-circuit logic.
+
+        - If ``default`` ROI has cards → return ``{"hand1": cards}``.
+        - Otherwise try ``split1``; if cards found, also try ``split2``.
+        - Returns ``{}`` when no cards are detected in any ROI.
+        """
+        if roi_cfg.default is not None:
+            cards = detect_cards_in_roi(
+                frame, roi_cfg.default, player_templates, config.card_threshold
+            )
+            if cards:
+                return {"hand1": cards}
+        if roi_cfg.split1 is not None:
+            split1_cards = detect_cards_in_roi(
+                frame, roi_cfg.split1, player_templates, config.card_threshold
+            )
+            if split1_cards:
+                hands: dict[str, list[str]] = {"hand1": split1_cards}
+                if roi_cfg.split2 is not None:
+                    split2_cards = detect_cards_in_roi(
+                        frame, roi_cfg.split2, player_templates, config.card_threshold
+                    )
+                    if split2_cards:
+                        hands["hand2"] = split2_cards
+                return hands
+        return {}
 
     with ThreadPoolExecutor(max_workers=len(player_tasks) or 1) as executor:
         futures = {
-            key: executor.submit(_detect_player, roi)
-            for key, roi in player_tasks.items()
+            key: executor.submit(_detect_player, roi_cfg)
+            for key, roi_cfg in player_tasks.items()
         }
         player_results = {key: fut.result() for key, fut in futures.items()}
 
     for i in range(1, 8):
         key = f"player_{i}"
-        session_result[key] = player_results.get(key, [])
+        session_result[key] = player_results.get(key, {})
         if session_result[key]:
             logger.debug("Player %d cards: %s", i, session_result[key])
 
@@ -421,3 +468,15 @@ def map_card_names(names: list[str]) -> list[CardClass]:
             logger.warning("Unrecognised card name %r, mapping to UNKNOWN", name)
             result.append(CardClass.UNKNOWN)
     return result
+
+
+def map_player_hands(
+    hands: dict[str, list[str]],
+) -> dict[str, list[CardClass]] | None:
+    """Map a player hands dict of raw card name stems to ``CardClass`` values.
+
+    Returns ``None`` when *hands* is empty (no cards detected for that player).
+    """
+    if not hands:
+        return None
+    return {hand: map_card_names(cards) for hand, cards in hands.items()}

@@ -20,6 +20,7 @@ from app.vision import (
     build_vision_config,
     load_card_templates,
     map_card_names,
+    map_player_hands,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,13 +98,13 @@ async def stream_video_for_processing(
                 game_result = GameResult(
                     session_number=result.get("session"),
                     dealer_cards=map_card_names(result.get("dealer", [])),
-                    player1_cards=map_card_names(result.get("player_1", [])) or None,
-                    player2_cards=map_card_names(result.get("player_2", [])) or None,
-                    player3_cards=map_card_names(result.get("player_3", [])) or None,
-                    player4_cards=map_card_names(result.get("player_4", [])) or None,
-                    player5_cards=map_card_names(result.get("player_5", [])) or None,
-                    player6_cards=map_card_names(result.get("player_6", [])) or None,
-                    player7_cards=map_card_names(result.get("player_7", [])) or None,
+                    player1_cards=map_player_hands(result.get("player_1", {})),
+                    player2_cards=map_player_hands(result.get("player_2", {})),
+                    player3_cards=map_player_hands(result.get("player_3", {})),
+                    player4_cards=map_player_hands(result.get("player_4", {})),
+                    player5_cards=map_player_hands(result.get("player_5", {})),
+                    player6_cards=map_player_hands(result.get("player_6", {})),
+                    player7_cards=map_player_hands(result.get("player_7", {})),
                 )
                 game_session = BlackjackGameSession(
                     task_id=task_id,
