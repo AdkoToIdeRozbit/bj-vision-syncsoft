@@ -166,16 +166,79 @@ When a video is uploaded, the background worker:
 1. Updates the task status to `processing`
 2. Loads the card and replay-button templates for the selected resolution profile from `app/vision/template-images/`
 3. Scans the video frame-by-frame for the replay button (using OpenCV template matching) to detect session boundaries
-4. For each detected session-ending frame, identifies dealer and player cards via template matching
+4. For each detected session-ending frame, identifies dealer and player cards via template matching, with split-hand support (see below)
 5. Persists each detected game as a `blackjack_game_session` row (JSON result with cards per player/dealer)
 6. Updates the task status to `completed` (or `failed` on error)
 
-Resolution profiles and their ROI defaults are defined in `app/vision/processor.py`:
+### Split Hand Detection
+
+Each player slot has up to three Region-of-Interest (ROI) areas configured via `PlayerROIConfig`:
+
+| Field | Description |
+|-------|-------------|
+| `default` | Standard single-hand ROI |
+| `split1` | First split hand ROI (optional) |
+| `split2` | Second split hand ROI (optional) |
+
+Detection follows a short-circuit cascade per player:
+
+1. Check `default` ROI — if cards found, record as `{"hand1": [...]}` and stop.
+2. Otherwise try `split1` — if cards found, also check `split2` and record as `{"hand1": [...], "hand2": [...]}` (omitting `hand2` if empty).
+3. If nothing is found, the player field is `null`.
+
+`split1` and `split2` ROI coordinates default to `null` in all profiles; set them in `_PROFILE_DEFAULTS` inside `app/vision/processor.py` once the exact pixel boundaries for each resolution are known.
+
+As a result, the `player{1-7}_cards` field in `blackjack_game_session` is now a `dict` (or `null`), not a flat list:
+
+```json
+{
+  "dealer_cards": ["ace_spades", "king_hearts"],
+  "player1_cards": {"hand1": ["seven_clubs", "eight_diamonds"]},
+  "player2_cards": {"hand1": ["five_spades"], "hand2": ["queen_hearts"]},
+  "player3_cards": null
+}
+```
+
+The CSV export (`GET /api/game-sessions/export`) serialises split hands as `hand1: card|card; hand2: card|card`.
+
+### ROI Profile Defaults
+
+Resolution profiles and their ROI defaults are defined in `app/vision/processor.py`.
+
+Each player ROI is a `PlayerROIConfig` with three optional fields — `default`, `split1`, `split2` — encoded as `(x1, y1, x2, y2)` pixel rectangles. `None` means that seat/hand position is not yet calibrated for that profile.
+
+#### Global ROIs
 
 | Profile | Replay ROI | Dealer ROI |
-|---------|-----------|------------|
+|---------|------------|------------|
 | `480p`  | `220,223,240,240` | `230,83,290,91` |
 | `4k`    | `1000,1020,1150,1150` | `1070,560,1300,593` |
+
+#### Player ROIs — `480p`
+
+| Player | `default` | `split1` | `split2` |
+|--------|-----------|----------|----------|
+| player_1 | `null` | `null` | `null` |
+| player_2 | `null` | `null` | `null` |
+| player_3 | `null` | `null` | `null` |
+| player_4 | `399,290,407,374` | `null` | `null` |
+| player_5 | `null` | `null` | `null` |
+| player_6 | `525,260,533,358` | `null` | `null` |
+| player_7 | `null` | `null` | `null` |
+
+#### Player ROIs — `4k`
+
+| Player | `default` | `split1` | `split2` |
+|--------|-----------|----------|----------|
+| player_1 | `1045,1183,1077,1467` | `null` | `null` |
+| player_2 | `1225,1260,1255,1534` | `null` | `null` |
+| player_3 | `1440,1300,1475,1580` | `null` | `null` |
+| player_4 | `1675,1240,1705,1594` | `null` | `null` |
+| player_5 | `1910,1300,1938,1578` | `null` | `null` |
+| player_6 | `2126,1270,2156,1536` | `null` | `null` |
+| player_7 | `2305,1200,2335,1464` | `null` | `null` |
+
+> **Adding split ROI coordinates**: set `split1` and optionally `split2` on the relevant `PlayerROIConfig` entries in `_PROFILE_DEFAULTS`. Use `scripts/pattern-matching.py` or `scripts/draw_bboxes.py` to calibrate the pixel rectangles for a given video source.
 
 The standalone CLI script `scripts/pattern-matching.py` uses the same detection logic and can be run independently for debugging or batch processing.
 

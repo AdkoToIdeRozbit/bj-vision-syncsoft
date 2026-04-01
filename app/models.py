@@ -36,13 +36,13 @@ class CardClass(StrEnum):
 
 class GameResult(SQLModel):
     session_number: int | None = None
-    player1_cards: list[CardClass] | None = None
-    player2_cards: list[CardClass] | None = None
-    player3_cards: list[CardClass] | None = None
-    player4_cards: list[CardClass] | None = None
-    player5_cards: list[CardClass] | None = None
-    player6_cards: list[CardClass] | None = None
-    player7_cards: list[CardClass] | None = None
+    player1_cards: dict[str, list[CardClass]] | None = None
+    player2_cards: dict[str, list[CardClass]] | None = None
+    player3_cards: dict[str, list[CardClass]] | None = None
+    player4_cards: dict[str, list[CardClass]] | None = None
+    player5_cards: dict[str, list[CardClass]] | None = None
+    player6_cards: dict[str, list[CardClass]] | None = None
+    player7_cards: dict[str, list[CardClass]] | None = None
     dealer_cards: list[CardClass] | None = None
 
 

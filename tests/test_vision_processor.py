@@ -1,10 +1,14 @@
 """Unit tests for app/vision/processor.py."""
 
+from unittest.mock import patch
+
 from app.models import CardClass
 from app.vision.processor import (
+    PlayerROIConfig,
     _merge_detections,
     build_vision_config,
     map_card_names,
+    map_player_hands,
 )
 
 # ---------------------------------------------------------------------------
@@ -63,15 +67,15 @@ def test_build_vision_config_custom_thresholds():
 
 def test_build_vision_config_480p_has_player_rois():
     cfg = build_vision_config("video.mp4", "480p")
-    assert cfg.player_rois["player_4"] == (399, 290, 407, 374)
-    assert cfg.player_rois["player_6"] == (525, 260, 533, 358)
+    assert cfg.player_rois["player_4"].default == (399, 290, 407, 374)  # type: ignore
+    assert cfg.player_rois["player_6"].default == (525, 260, 533, 358)  # type: ignore
     assert cfg.player_rois["player_1"] is None
 
 
 def test_build_vision_config_4k_has_player_rois():
     cfg = build_vision_config("video.mp4", "4k")
-    assert cfg.player_rois["player_1"] == (1045, 1183, 1077, 1467)
-    assert cfg.player_rois["player_4"] == (1675, 1240, 1705, 1594)
+    assert cfg.player_rois["player_1"].default == (1045, 1183, 1077, 1467)  # type: ignore
+    assert cfg.player_rois["player_4"].default == (1675, 1240, 1705, 1594)  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -97,3 +101,161 @@ def test_merge_detections_separate_clusters():
     # Two far-apart points → distinct cards
     points = [(0, 0), (100, 100)]
     assert _merge_detections(points, 10, 10) == 2
+
+
+# ---------------------------------------------------------------------------
+# map_player_hands
+# ---------------------------------------------------------------------------
+
+
+def test_map_player_hands_empty_returns_none():
+    assert map_player_hands({}) is None
+
+
+def test_map_player_hands_single_hand():
+    result = map_player_hands({"hand1": ["ace", "king"]})
+    assert result == {"hand1": [CardClass.ACE, CardClass.KING]}
+
+
+def test_map_player_hands_split_hands():
+    result = map_player_hands({"hand1": ["ace"], "hand2": ["queen", "three"]})
+    assert result == {
+        "hand1": [CardClass.ACE],
+        "hand2": [CardClass.QUEEN, CardClass.THREE],
+    }
+
+
+def test_map_player_hands_unknown_card():
+    result = map_player_hands({"hand1": ["ace", "joker"]})
+    assert result == {"hand1": [CardClass.ACE, CardClass.UNKNOWN]}
+
+
+# ---------------------------------------------------------------------------
+# PlayerROIConfig split detection logic
+# ---------------------------------------------------------------------------
+
+
+def _make_frame():
+    """Return a tiny black BGR frame for use in patched detection tests."""
+    import numpy as np
+
+    return np.zeros((10, 10, 3), dtype="uint8")
+
+
+_DEFAULT_ROI = (0, 0, 5, 5)
+_SPLIT1_ROI = (5, 0, 10, 5)
+_SPLIT2_ROI = (0, 5, 5, 10)
+
+
+def test_player_roi_default_cards_found_skips_splits():
+    """When default ROI has cards, split ROIs must not be checked."""
+    roi_cfg = PlayerROIConfig(
+        default=_DEFAULT_ROI, split1=_SPLIT1_ROI, split2=_SPLIT2_ROI
+    )
+    call_log: list[tuple] = []
+
+    def fake_detect(frame, roi, templates, threshold):
+        call_log.append(roi)
+        if roi == _DEFAULT_ROI:
+            return ["ace"]
+        return []
+
+    with patch("app.vision.processor.detect_cards_in_roi", side_effect=fake_detect):
+        from unittest.mock import MagicMock
+
+        from app.vision.processor import _detect_cards_for_session
+
+        config = MagicMock()
+        config.dealer_roi = None
+        config.player_rois = {"player_1": roi_cfg}
+        config.card_threshold = 0.8
+
+        frame = _make_frame()
+        result = _detect_cards_for_session(0, frame, config, [], [])
+
+    assert result is not None
+    assert result["player_1"] == {"hand1": ["ace"]}
+    assert _SPLIT1_ROI not in call_log
+    assert _SPLIT2_ROI not in call_log
+
+
+def test_player_roi_default_empty_tries_splits():
+    """When default ROI is empty, split ROIs should be tried."""
+    roi_cfg = PlayerROIConfig(
+        default=_DEFAULT_ROI, split1=_SPLIT1_ROI, split2=_SPLIT2_ROI
+    )
+
+    def fake_detect(frame, roi, templates, threshold):
+        if roi == _DEFAULT_ROI:
+            return []
+        if roi == _SPLIT1_ROI:
+            return ["ten"]
+        if roi == _SPLIT2_ROI:
+            return ["queen"]
+        return []
+
+    with patch("app.vision.processor.detect_cards_in_roi", side_effect=fake_detect):
+        from unittest.mock import MagicMock
+
+        from app.vision.processor import _detect_cards_for_session
+
+        config = MagicMock()
+        config.dealer_roi = None
+        config.player_rois = {"player_1": roi_cfg}
+        config.card_threshold = 0.8
+
+        result = _detect_cards_for_session(0, _make_frame(), config, [], [])
+
+    assert result is not None
+    assert result["player_1"] == {"hand1": ["ten"], "hand2": ["queen"]}
+
+
+def test_player_roi_split1_empty_does_not_check_split2():
+    """split2 should only be checked when split1 also has cards."""
+    roi_cfg = PlayerROIConfig(
+        default=_DEFAULT_ROI, split1=_SPLIT1_ROI, split2=_SPLIT2_ROI
+    )
+    call_log: list[tuple] = []
+
+    def fake_detect(frame, roi, templates, threshold):
+        call_log.append(roi)
+        return []  # nothing found anywhere
+
+    with patch("app.vision.processor.detect_cards_in_roi", side_effect=fake_detect):
+        from unittest.mock import MagicMock
+
+        from app.vision.processor import _detect_cards_for_session
+
+        config = MagicMock()
+        config.dealer_roi = None
+        config.player_rois = {"player_1": roi_cfg}
+        config.card_threshold = 0.8
+
+        result = _detect_cards_for_session(0, _make_frame(), config, [], [])
+
+    assert result is not None
+    assert result["player_1"] == {}
+    assert _SPLIT2_ROI not in call_log
+
+
+def test_player_roi_no_split_rois_single_hand():
+    """PlayerROIConfig with only default behaves like the old single-ROI path."""
+    roi_cfg = PlayerROIConfig(default=_DEFAULT_ROI)
+
+    def fake_detect(frame, roi, templates, threshold):
+        return ["nine"]
+
+    with patch("app.vision.processor.detect_cards_in_roi", side_effect=fake_detect):
+        from unittest.mock import MagicMock
+
+        from app.vision.processor import _detect_cards_for_session
+
+        config = MagicMock()
+        config.dealer_roi = None
+        config.player_rois = {"player_1": roi_cfg}
+        config.card_threshold = 0.8
+
+        result = _detect_cards_for_session(0, _make_frame(), config, [], [])
+
+    assert result is not None
+    assert result["player_1"] == {"hand1": ["nine"]}

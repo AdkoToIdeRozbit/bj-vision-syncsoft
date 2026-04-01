@@ -105,8 +105,14 @@ _CSV_HEADERS = (
 )
 
 
-def _cards_str(cards: list | None) -> str:
-    return "|".join(cards) if cards else ""
+def _cards_str(cards: dict | list | None) -> str:
+    if not cards:
+        return ""
+    if isinstance(cards, dict):
+        return "; ".join(
+            f"{hand}: {'|'.join(c)}" for hand, c in cards.items()
+        )
+    return "|".join(cards)
 
 
 @router.get("/export", response_class=StreamingResponse)

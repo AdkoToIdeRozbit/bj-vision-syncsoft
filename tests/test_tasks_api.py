@@ -160,13 +160,13 @@ def test_background_worker_creates_game_sessions(db_session, tmp_path, monkeypat
             "session": 1,
             "frame": 100,
             "dealer": ["ace", "ten"],
-            "player_1": [],
-            "player_2": [],
-            "player_3": [],
-            "player_4": ["two"],
-            "player_5": [],
-            "player_6": ["seven"],
-            "player_7": [],
+            "player_1": {},
+            "player_2": {},
+            "player_3": {},
+            "player_4": {"hand1": ["two"]},
+            "player_5": {},
+            "player_6": {"hand1": ["seven"]},
+            "player_7": {},
         }
     ]
 
@@ -195,5 +195,5 @@ def test_background_worker_creates_game_sessions(db_session, tmp_path, monkeypat
     result = sessions[0].result
     assert "ace" in result["dealer_cards"]
     assert "ten" in result["dealer_cards"]
-    assert "two" in result["player4_cards"]
-    assert "seven" in result["player6_cards"]
+    assert "two" in result["player4_cards"]["hand1"]
+    assert "seven" in result["player6_cards"]["hand1"]
