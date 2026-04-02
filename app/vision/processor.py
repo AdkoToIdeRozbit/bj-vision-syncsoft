@@ -94,11 +94,25 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
                 split1=(1003, 1150, 1033, 1445),
                 split2=(1090, 1200, 1120, 1490),
             ),
+            # TODO: Please fulfill split ROIs for player 2 when you get a chance, I don't have good footage of splits in 4k yet
             "player_2": PlayerROIConfig(default=(1225, 1260, 1255, 1534)),
-            "player_3": PlayerROIConfig(default=(1440, 1300, 1475, 1580)),
+            "player_3": PlayerROIConfig(
+                default=(1440, 1300, 1475, 1580),
+                split1=(1400, 1330, 1430, 1575),
+                split2=(1484, 1320, 1515, 1588),
+            ),
+            # TODO: Please fulfill split ROIs for player 4 when you get a chance, I don't have good footage of splits in 4k yet
             "player_4": PlayerROIConfig(default=(1675, 1240, 1705, 1594)),
-            "player_5": PlayerROIConfig(default=(1910, 1300, 1938, 1578)),
-            "player_6": PlayerROIConfig(default=(2126, 1270, 2156, 1536)),
+            "player_5": PlayerROIConfig(
+                default=(1910, 1300, 1938, 1578),
+                split1=(1867, 1320, 1898, 1589),
+                split2=(1953, 1300, 1985, 1578),
+            ),
+            "player_6": PlayerROIConfig(
+                default=(2126, 1270, 2156, 1536),
+                split1=(2082, 1290, 2114, 1550),
+                split2=(2170, 1280, 2201, 1520),
+            ),
             "player_7": PlayerROIConfig(
                 default=(2305, 1200, 2335, 1464),
                 split1=(2262, 1220, 2295, 1487),
