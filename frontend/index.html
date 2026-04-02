@@ -413,11 +413,27 @@
                 return cards.join(', ');
             };
 
+            // Format a player hands dict: { hand1: [...] } or { hand1: [...], hand2: [...] }
+            const formatPlayerHands = (handsDict) => {
+                if (!handsDict || typeof handsDict !== 'object') return null;
+                const keys = Object.keys(handsDict).filter(k => handsDict[k] && handsDict[k].length > 0);
+                if (keys.length === 0) return null;
+                if (keys.length === 1) {
+                    return formatCards(handsDict[keys[0]]);
+                }
+                // Split hands — label each hand
+                return keys.map(k => {
+                    const label = k.replace('hand', 'H');
+                    return `<span style="color:var(--text-muted)">${label}:</span> ${formatCards(handsDict[k])}`;
+                }).join(' &nbsp;|&nbsp; ');
+            };
+
             let playersHtml = '';
             for(let i=1; i<=7; i++) {
                 const pCards = data.data[`player${i}_cards`];
-                if (pCards && pCards.length > 0) {
-                    playersHtml += `<br/>Player ${i}: ${formatCards(pCards)}`;
+                const formatted = formatPlayerHands(pCards);
+                if (formatted) {
+                    playersHtml += `<br/>Player ${i}: ${formatted}`;
                 }
             }
 
