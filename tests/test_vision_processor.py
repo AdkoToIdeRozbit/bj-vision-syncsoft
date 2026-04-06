@@ -1,9 +1,10 @@
 """Unit tests for app/vision/processor.py."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.models import CardClass
 from app.vision.processor import (
+    LiveVideoProcessor,
     PlayerROIConfig,
     _merge_detections,
     build_vision_config,
@@ -259,3 +260,206 @@ def test_player_roi_no_split_rois_single_hand():
 
     assert result is not None
     assert result["player_1"] == {"hand1": ["nine"]}
+
+
+# ---------------------------------------------------------------------------
+# build_vision_config — deck swap defaults
+# ---------------------------------------------------------------------------
+
+
+def test_build_vision_config_deck_swap_defaults():
+    cfg = build_vision_config("video.mp4", "480p")
+    assert cfg.deck_swap_threshold_sec == 22.0
+    assert cfg.fps == 30.0
+
+
+def test_build_vision_config_deck_swap_custom():
+    cfg = build_vision_config("video.mp4", "4k", deck_swap_threshold_sec=30.0, fps=15.0)
+    assert cfg.deck_swap_threshold_sec == 30.0
+    assert cfg.fps == 15.0
+
+
+# ---------------------------------------------------------------------------
+# LiveVideoProcessor — deck swap detection
+# ---------------------------------------------------------------------------
+
+
+def _make_processor(
+    deck_swap_threshold_sec: float = 22.0,
+    fps: float = 30.0,
+) -> LiveVideoProcessor:
+    """Build a LiveVideoProcessor with a mocked replay template."""
+    cfg = build_vision_config(
+        "dummy.mp4",
+        "480p",
+        deck_swap_threshold_sec=deck_swap_threshold_sec,
+        fps=fps,
+    )
+    # Disable ROI slicing so the tiny test frame (10×10) is used directly
+    cfg.replay_roi = None
+
+    processor = LiveVideoProcessor.__new__(LiveVideoProcessor)
+    processor.config = cfg
+    processor.dealer_templates = []
+    processor.player_templates = []
+    processor.replay_template_img = MagicMock()
+    processor.LOOKBACK = cfg.lookback
+    from collections import deque
+
+    processor.buffer = deque(maxlen=cfg.lookback + 1)
+    processor.frame_index = 0
+    processor.session_num = 1
+    processor.replay_active = False
+    processor.deck_number = 1
+    processor._replay_last_disappeared = -1
+    processor._deck_swap_declared = False
+    processor._deck_swap_threshold_frames = int(deck_swap_threshold_sec * fps)
+    return processor
+
+
+def _drive_processor(
+    processor: LiveVideoProcessor,
+    replay_score: float,
+    session_result: dict | None,
+) -> dict | None:
+    """Feed one frame into the processor with mocked cv2 calls."""
+    import numpy as np
+
+    frame = np.zeros((10, 10, 3), dtype="uint8")
+
+    with (
+        patch("cv2.matchTemplate"),
+        patch("cv2.minMaxLoc", return_value=(0.0, replay_score, None, None)),
+        patch(
+            "app.vision.processor._detect_cards_for_session",
+            return_value=session_result,
+        ),
+    ):
+        return processor.process_frame(frame)
+
+
+def test_no_deck_swap_within_normal_gap():
+    """No deck-swap event when the gap is below the threshold."""
+    processor = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+
+    session_payload = {"frame": 0, "dealer": ["ace"], "player_1": {}}
+
+    # First session
+    _drive_processor(processor, 0.9, session_payload)
+    # Replay disappears
+    _drive_processor(processor, 0.5, None)
+    # Advance only 200 frames (< 660 threshold)
+    processor.frame_index += 200
+    processor._replay_last_disappeared = processor.frame_index - 200
+
+    # One more frame still within threshold — no deck_swap event
+    result = _drive_processor(processor, 0.5, None)
+    assert result is None
+    assert processor.deck_number == 1
+
+
+def test_deck_swap_event_fired_proactively():
+    """A deck_swap event dict is returned the moment the threshold elapses."""
+    processor = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+
+    session_payload = {"frame": 0, "dealer": ["ace"], "player_1": {}}
+
+    # First session
+    result1 = _drive_processor(processor, 0.9, session_payload)
+    assert result1 is not None
+    assert result1["event"] == "session"
+    assert result1["card_deck"] == 1
+
+    # Replay disappears
+    _drive_processor(processor, 0.5, None)
+
+    # Jump past the threshold
+    processor._replay_last_disappeared = 0
+    processor.frame_index = 700
+
+    # Next frame (no replay) should emit the deck_swap event
+    swap_event = _drive_processor(processor, 0.5, None)
+    assert swap_event is not None
+    assert swap_event["event"] == "deck_swap"
+    assert swap_event["card_deck"] == 2
+    assert processor.deck_number == 2
+    assert processor.session_num == 1
+
+    # Subsequent frames must NOT re-fire the swap
+    no_event = _drive_processor(processor, 0.5, None)
+    assert no_event is None
+    assert processor.deck_number == 2
+
+
+def test_session_after_swap_uses_new_deck():
+    """The first session detected after a swap carries the new deck number."""
+    processor = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+
+    session_payload = {"frame": 0, "dealer": ["ace"], "player_1": {}}
+
+    _drive_processor(processor, 0.9, session_payload)
+    _drive_processor(processor, 0.5, None)
+
+    processor._replay_last_disappeared = 0
+    processor.frame_index = 700
+
+    # Fire the swap event
+    swap = _drive_processor(processor, 0.5, None)
+    assert swap["event"] == "deck_swap"
+    assert swap["card_deck"] == 2
+
+    # Now detect the first session of the new deck
+    result = _drive_processor(processor, 0.9, session_payload)
+    assert result is not None
+    assert result["event"] == "session"
+    assert result["card_deck"] == 2
+    assert result["session"] == 1
+
+
+def test_multiple_deck_swaps():
+    """Multiple consecutive swaps each emit one deck_swap event."""
+    processor = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+
+    session_payload = {"frame": 0, "dealer": ["ace"], "player_1": {}}
+
+    for expected_deck in range(1, 4):
+        if expected_deck > 1:
+            # Simulate a long gap to trigger the swap proactively
+            processor._replay_last_disappeared = 0
+            processor.frame_index = 700
+            processor._deck_swap_declared = False
+
+            swap = _drive_processor(processor, 0.5, None)
+            assert swap is not None
+            assert swap["event"] == "deck_swap"
+            assert swap["card_deck"] == expected_deck
+
+        result = _drive_processor(processor, 0.9, session_payload)
+        assert result is not None
+        assert result["event"] == "session"
+        assert result["card_deck"] == expected_deck
+        assert result["session"] == 1
+
+        _drive_processor(processor, 0.5, None)
+
+
+def test_no_swap_when_replay_never_appeared():
+    """If the replay button has never been seen, no deck swap should fire."""
+    processor = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+    # _replay_last_disappeared starts at -1 (never seen)
+
+    # Advance well past any threshold — still no swap because replay was never seen
+    processor.frame_index = 1000
+
+    result = _drive_processor(processor, 0.5, None)
+    assert result is None
+    assert processor.deck_number == 1
+
+
+def test_deck_swap_threshold_frames_calculated_from_fps():
+    """Threshold in frames scales correctly with different FPS values."""
+    proc_30 = _make_processor(deck_swap_threshold_sec=22.0, fps=30.0)
+    proc_15 = _make_processor(deck_swap_threshold_sec=22.0, fps=15.0)
+
+    assert proc_30._deck_swap_threshold_frames == 660
+    assert proc_15._deck_swap_threshold_frames == 330

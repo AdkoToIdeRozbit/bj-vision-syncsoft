@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     REPLAY_THRESHOLD: float = 0.8
     CARD_THRESHOLD: float = 0.8
+    DECK_SWAP_THRESHOLD_SEC: float = 22.0
+    DEFAULT_FPS: float = 30.0
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)

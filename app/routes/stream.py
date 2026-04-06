@@ -35,6 +35,8 @@ async def stream_video_for_processing(
     api_key: str = "",
     profile: Literal["480p", "4k"] = "480p",
     lookback: int = 2,
+    deck_swap_threshold: float = 22.0,
+    fps: float = 30.0,
 ):
     if api_key != settings.API_KEY:
         await websocket.close()
@@ -60,6 +62,8 @@ async def stream_video_for_processing(
             replay_threshold=settings.REPLAY_THRESHOLD,
             card_threshold=settings.CARD_THRESHOLD,
             lookback=lookback,
+            deck_swap_threshold_sec=deck_swap_threshold,
+            fps=fps,
         )
         dealer_templates = load_card_templates(vision_config.dealer_template_dir)
         player_templates = load_card_templates(vision_config.player_template_dir)
@@ -94,34 +98,48 @@ async def stream_video_for_processing(
             result = await run_in_threadpool(processor.process_frame, frame)
 
             if result is not None:
-                # Save to database
-                game_result = GameResult(
-                    session_number=result.get("session"),
-                    dealer_cards=map_card_names(result.get("dealer", [])),
-                    player1_cards=map_player_hands(result.get("player_1", {})),
-                    player2_cards=map_player_hands(result.get("player_2", {})),
-                    player3_cards=map_player_hands(result.get("player_3", {})),
-                    player4_cards=map_player_hands(result.get("player_4", {})),
-                    player5_cards=map_player_hands(result.get("player_5", {})),
-                    player6_cards=map_player_hands(result.get("player_6", {})),
-                    player7_cards=map_player_hands(result.get("player_7", {})),
-                )
-                game_session = BlackjackGameSession(
-                    task_id=task_id,
-                    result=game_result.model_dump(),
-                )
-                session.add(game_session)
-                session.commit()
+                event = result.get("event")
 
-                # Emit to client immediately
-                await websocket.send_json(
-                    {
-                        "type": "result",
-                        "session_number": result.get("session"),
-                        "frame_index": result.get("frame"),
-                        "data": game_result.model_dump(),
-                    }
-                )
+                if event == "deck_swap":
+                    # Proactive swap event — no cards to store, just notify client.
+                    await websocket.send_json(
+                        {
+                            "type": "deck_swap",
+                            "new_deck": result["card_deck"],
+                            "frame_index": result["frame"],
+                        }
+                    )
+
+                else:
+                    # Normal session result — persist and emit to client.
+                    game_result = GameResult(
+                        card_deck=result.get("card_deck"),
+                        session_number=result.get("session"),
+                        dealer_cards=map_card_names(result.get("dealer", [])),
+                        player1_cards=map_player_hands(result.get("player_1", {})),
+                        player2_cards=map_player_hands(result.get("player_2", {})),
+                        player3_cards=map_player_hands(result.get("player_3", {})),
+                        player4_cards=map_player_hands(result.get("player_4", {})),
+                        player5_cards=map_player_hands(result.get("player_5", {})),
+                        player6_cards=map_player_hands(result.get("player_6", {})),
+                        player7_cards=map_player_hands(result.get("player_7", {})),
+                    )
+                    game_session = BlackjackGameSession(
+                        task_id=task_id,
+                        result=game_result.model_dump(),
+                    )
+                    session.add(game_session)
+                    session.commit()
+
+                    await websocket.send_json(
+                        {
+                            "type": "result",
+                            "card_deck": result.get("card_deck"),
+                            "session_number": result.get("session"),
+                            "frame_index": result.get("frame"),
+                            "data": game_result.model_dump(),
+                        }
+                    )
 
     except WebSocketDisconnect:
         logger.info("Stream Task %d: WebSocket disconnected", task_id)

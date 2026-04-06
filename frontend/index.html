@@ -304,8 +304,13 @@
                     </div>
 
                     <div class="form-group">
-                        <label>Stream FPS</label>
+                        <label>Stream FPS <span style="color:var(--text-muted);font-weight:400">(sent to server)</span></label>
                         <input type="number" id="streamFps" value="15" min="1" max="60">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Deck Swap Threshold (seconds)</label>
+                        <input type="number" id="deckSwapThreshold" value="22" min="1" step="1">
                     </div>
 
                     <div class="form-group">
@@ -372,7 +377,8 @@
             frameCounter: document.getElementById('frameCounter'),
             captureCanvas: document.getElementById('captureCanvas'),
             streamFps: document.getElementById('streamFps'),
-            frameQuality: document.getElementById('frameQuality')
+            frameQuality: document.getElementById('frameQuality'),
+            deckSwapThreshold: document.getElementById('deckSwapThreshold')
         };
 
         const ctx = DOM.captureCanvas.getContext('2d', { willReadFrequently: true });
@@ -438,7 +444,7 @@
             }
 
             item.innerHTML = `
-                <div class="result-title">Session: ${data.session_number} | Frame: ${data.frame_index}</div>
+                <div class="result-title">Deck ${data.card_deck ?? 1} &nbsp;&bull;&nbsp; Session ${data.session_number} &nbsp;&bull;&nbsp; Frame ${data.frame_index}</div>
                 <div class="result-details">
                     Dealer: <strong>${formatCards(data.data.dealer_cards)}</strong>
                     ${playersHtml}
@@ -510,6 +516,8 @@
             url.searchParams.append('api_key', DOM.apiKey.value);
             url.searchParams.append('profile', DOM.profile.value);
             url.searchParams.append('lookback', DOM.lookback.value);
+            url.searchParams.append('fps', Math.max(1, Math.min(60, parseFloat(DOM.streamFps.value) || 15)));
+            url.searchParams.append('deck_swap_threshold', Math.max(1, parseFloat(DOM.deckSwapThreshold.value) || 22));
 
             setStatus('error', 'Connecting...');
             
@@ -539,6 +547,12 @@
                         const data = JSON.parse(event.data);
                         if (data.type === 'status') {
                             setStatus('connected', `Processing (Task ${data.task_id})`);
+                        } else if (data.type === 'deck_swap') {
+                            const banner = document.createElement('div');
+                            banner.className = 'result-item';
+                            banner.style.cssText = 'border-left: 3px solid var(--success); background: rgba(16,185,129,0.08);';
+                            banner.innerHTML = `<div class="result-title" style="color:var(--success)">&#x21BA; Card Deck Swap &mdash; Now on Deck ${data.new_deck}</div><div class="result-details">Frame ${data.frame_index}</div>`;
+                            DOM.resultsBox.prepend(banner);
                         } else if (data.type === 'result') {
                             appendResult(data);
                         }

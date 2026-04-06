@@ -61,6 +61,13 @@ class VisionConfig:
     card_threshold: float = 0.8
     lookback: int = 5
 
+    # Deck swap detection: if no replay button appears for longer than this
+    # many seconds after it last disappeared, a deck swap is declared.
+    deck_swap_threshold_sec: float = 22.0
+    # Frames-per-second used to convert the time threshold to a frame count.
+    # For file uploads this is overridden with the actual video FPS.
+    fps: float = 30.0
+
 
 # Hard-coded ROI defaults per resolution profile.
 # These come from the .env comments; callers can override thresholds via
@@ -131,6 +138,8 @@ def build_vision_config(
     replay_threshold: float = 0.8,
     card_threshold: float = 0.8,
     lookback: int = 5,
+    deck_swap_threshold_sec: float = 22.0,
+    fps: float = 30.0,
 ) -> VisionConfig:
     """Build a VisionConfig for the given resolution profile."""
     defaults = _PROFILE_DEFAULTS[profile]
@@ -145,6 +154,8 @@ def build_vision_config(
         player_rois=defaults["player_rois"],
         card_threshold=card_threshold,
         lookback=lookback,
+        deck_swap_threshold_sec=deck_swap_threshold_sec,
+        fps=fps,
     )
 
 
@@ -358,8 +369,29 @@ class LiveVideoProcessor:
         self.session_num = 1
         self.replay_active = False
 
+        # Deck swap detection state
+        self.deck_number = 1
+        # Frame index at which the replay button last disappeared (-1 = never seen)
+        self._replay_last_disappeared: int = -1
+        # True once the swap event has been emitted for the current gap, so we
+        # don't fire it repeatedly on every subsequent frame of the swap.
+        self._deck_swap_declared: bool = False
+        # Pre-computed frame-count threshold from seconds × fps
+        self._deck_swap_threshold_frames: int = int(
+            self.config.deck_swap_threshold_sec * self.config.fps
+        )
+
     def process_frame(self, frame: np.ndarray) -> dict | None:
-        """Process a single incoming frame and return a session dict if detected."""
+        """Process a single incoming frame.
+
+        Returns one of:
+        - ``None`` — nothing notable this frame.
+        - A session dict with ``"event": "session"`` — dealer cards detected.
+        - A deck-swap dict with ``"event": "deck_swap"`` — emitted exactly once
+          when the replay button has been absent for longer than
+          ``deck_swap_threshold_sec`` with no dealer cards appearing, signalling
+          that the dealer swapped the card deck.
+        """
         self.buffer.append((self.frame_index, frame.copy()))
 
         if self.config.replay_roi is not None:
@@ -376,12 +408,15 @@ class LiveVideoProcessor:
         )
         _, max_val, _, _ = cv2.minMaxLoc(match_result)
 
-        session_result_out = None
+        result_out: dict | None = None
 
         if max_val >= self.config.replay_threshold and not self.replay_active:
+            # Replay button just appeared — a game session is ending.
             self.replay_active = True
-            target_idx, target_frame = self.buffer[0]
+            # Reset swap guard so the next gap can fire again.
+            self._deck_swap_declared = False
 
+            target_idx, target_frame = self.buffer[0]
             session_result = _detect_cards_for_session(
                 target_idx,
                 target_frame,
@@ -392,19 +427,50 @@ class LiveVideoProcessor:
 
             if session_result is not None:
                 logger.info(
-                    "Session %d: replay at frame %d, cards detected at frame %d",
+                    "Deck %d  Session %d: replay at frame %d, cards detected at frame %d",
+                    self.deck_number,
                     self.session_num,
                     self.frame_index,
                     target_idx,
                 )
-                session_result_out = {"session": self.session_num, **session_result}
+                result_out = {
+                    "event": "session",
+                    "card_deck": self.deck_number,
+                    "session": self.session_num,
+                    **session_result,
+                }
                 self.session_num += 1
 
         elif max_val < self.config.replay_threshold and self.replay_active:
+            # Replay button just disappeared — start timing the gap.
             self.replay_active = False
+            self._replay_last_disappeared = self.frame_index
+
+        elif (
+            not self.replay_active
+            and not self._deck_swap_declared
+            and self._replay_last_disappeared >= 0
+            and (self.frame_index - self._replay_last_disappeared)
+            > self._deck_swap_threshold_frames
+        ):
+            # The replay button has been absent longer than the allowed gap
+            # without any dealer cards appearing — declare a deck swap.
+            self._deck_swap_declared = True
+            self.deck_number += 1
+            self.session_num = 1
+            logger.info(
+                "Card deck swap detected at frame %d — now on deck %d",
+                self.frame_index,
+                self.deck_number,
+            )
+            result_out = {
+                "event": "deck_swap",
+                "card_deck": self.deck_number,
+                "frame": self.frame_index,
+            }
 
         self.frame_index += 1
-        return session_result_out
+        return result_out
 
 
 def process_video(
@@ -432,6 +498,17 @@ def process_video(
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
+    # Override the config FPS with the actual video FPS so that the
+    # deck-swap time threshold converts to the correct frame count.
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    if video_fps > 0:
+        config = VisionConfig(
+            **{
+                **config.__dict__,
+                "fps": video_fps,
+            }
+        )
+
     if config.replay_roi is not None:
         x1, y1, x2, y2 = config.replay_roi
         if x2 > frame_width or y2 > frame_height:
@@ -441,12 +518,14 @@ def process_video(
             )
 
     logger.info(
-        "Processing video: %s  [%dx%d]  replay_threshold=%.2f  card_threshold=%.2f",
+        "Processing video: %s  [%dx%d]  fps=%.2f  replay_threshold=%.2f  card_threshold=%.2f  deck_swap_threshold=%.1fs",
         config.video_path,
         frame_width,
         frame_height,
+        config.fps,
         config.replay_threshold,
         config.card_threshold,
+        config.deck_swap_threshold_sec,
     )
 
     results: list[dict] = []
@@ -458,7 +537,16 @@ def process_video(
 
         result = processor.process_frame(frame)
         if result is not None:
-            results.append(result)
+            # Deck-swap events carry no card data; they are already reflected
+            # in the card_deck counter on subsequent session results.
+            if result.get("event") == "deck_swap":
+                logger.info(
+                    "Deck swap event at frame %d — deck %d starts",
+                    result["frame"],
+                    result["card_deck"],
+                )
+            else:
+                results.append(result)
 
     cap.release()
     return results

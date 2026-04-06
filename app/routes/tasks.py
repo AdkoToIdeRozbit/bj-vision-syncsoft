@@ -46,11 +46,16 @@ class UploadVideoResponse(BaseModel):
     task_id: int
 
 
+class DeckGroup(BaseModel):
+    card_deck: int
+    game_sessions: list[GameResult]
+
+
 class TaskStatusResponse(BaseModel):
     task_id: str
     status: BlackjackTrackingTaskStatus
     csv_file_url: str | None = None
-    game_sessions: list[GameResult] = []
+    game_sessions_by_deck: list[DeckGroup] = []
 
 
 @router.get("/{task_id}/status", response_model=TaskStatusResponse)
@@ -61,13 +66,23 @@ async def get_task_status(task_id: str, session: SessionDep) -> TaskStatusRespon
             status_code=status.HTTP_404_NOT_FOUND, detail="task not found"
         )
 
-    game_sessions = [GameResult.model_validate(gs.result) for gs in task.game_sessions]
+    game_sessions = task.game_sessions
+
+    # Group sessions by card_deck
+    deck_map: dict[int, list[GameResult]] = {}
+    for gs in game_sessions:
+        gr = GameResult.model_validate(gs.result)
+        deck_key = gr.card_deck if gr.card_deck is not None else 1
+        deck_map.setdefault(deck_key, []).append(gr)
+    game_sessions_by_deck = [
+        DeckGroup(card_deck=k, game_sessions=v) for k, v in sorted(deck_map.items())
+    ]
 
     return TaskStatusResponse(
         task_id=task_id,
         status=task.status,
         csv_file_url=task.csv_output_path,
-        game_sessions=game_sessions,
+        game_sessions_by_deck=game_sessions_by_deck,
     )
 
 
@@ -76,7 +91,9 @@ async def get_task_status(task_id: str, session: SessionDep) -> TaskStatusRespon
 # ---------------------------------------------------------------------------
 
 
-def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
+def _process_video_bg(
+    task_id: int, video_path: str, profile: str, deck_swap_threshold_sec: float
+) -> None:
     """Blocking vision processing job — runs in a threadpool thread.
 
     Opens its own DB session because the request session is already closed
@@ -103,6 +120,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
                 profile=profile,  # type: ignore[arg-type]
                 replay_threshold=settings.REPLAY_THRESHOLD,
                 card_threshold=settings.CARD_THRESHOLD,
+                deck_swap_threshold_sec=deck_swap_threshold_sec,
             )
             dealer_templates = load_card_templates(vision_config.dealer_template_dir)
             player_templates = load_card_templates(vision_config.player_template_dir)
@@ -124,6 +142,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
             # Persist each detected game session
             for r in results:
                 game_result = GameResult(
+                    card_deck=r.get("card_deck"),
                     session_number=r.get("session"),
                     dealer_cards=map_card_names(r.get("dealer", [])),
                     player1_cards=map_player_hands(r.get("player_1", {})),
@@ -185,6 +204,7 @@ async def upload_video_for_processing(
     session: SessionDep,
     file: UploadFile = File(...),
     profile: Literal["480p", "4k"] = Form("480p"),
+    deck_swap_threshold: float = Form(22.0),
 ) -> UploadVideoResponse:
     if not file.filename:
         raise HTTPException(
@@ -235,7 +255,7 @@ async def upload_video_for_processing(
 
     # Trigger background processing
     background_tasks.add_task(
-        _process_video_bg, task.id or 0, str(storage_path), profile
+        _process_video_bg, task.id or 0, str(storage_path), profile, deck_swap_threshold
     )
 
     return UploadVideoResponse(task_id=task.id or 0)
