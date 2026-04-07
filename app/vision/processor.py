@@ -220,15 +220,45 @@ def detect_cards_in_roi(
     duplicates for multiple physical cards of the same rank).
     """
     x1, y1, x2, y2 = roi
-    region = frame[y1:y2, x1:x2]
+    fh, fw = frame.shape[:2]
+    # Clamp ROI to actual frame bounds before cropping
+    x1c, y1c, x2c, y2c = max(0, x1), max(0, y1), min(fw, x2), min(fh, y2)
+    if x2c <= x1c or y2c <= y1c:
+        logger.warning(
+            "ROI (%d,%d,%d,%d) is entirely outside frame %dx%d — skipping",
+            x1,
+            y1,
+            x2,
+            y2,
+            fw,
+            fh,
+        )
+        return []
+    if (x1c, y1c, x2c, y2c) != (x1, y1, x2, y2):
+        logger.warning(
+            "ROI (%d,%d,%d,%d) clipped to (%d,%d,%d,%d) for frame %dx%d",
+            x1,
+            y1,
+            x2,
+            y2,
+            x1c,
+            y1c,
+            x2c,
+            y2c,
+            fw,
+            fh,
+        )
+    region = frame[y1c:y2c, x1c:x2c]
     gray_region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
 
     detected_cards: list[str] = []
+    skipped_templates: list[str] = []
 
     for card_name, template in templates:
         th, tw = template.shape[:2]
 
         if tw > gray_region.shape[1] or th > gray_region.shape[0]:
+            skipped_templates.append(card_name)
             continue
 
         result = cv2.matchTemplate(gray_region, template, cv2.TM_CCOEFF_NORMED)
@@ -241,6 +271,17 @@ def detect_cards_in_roi(
         merged_count = _merge_detections(points, tw, th)
         for _ in range(merged_count):
             detected_cards.append(card_name)
+
+    if skipped_templates:
+        logger.debug(
+            "ROI (%d,%d,%d,%d): skipped %d templates that are larger than the crop region: %s",
+            x1,
+            y1,
+            x2,
+            y2,
+            len(skipped_templates),
+            skipped_templates,
+        )
 
     return detected_cards
 
@@ -263,11 +304,26 @@ def _detect_cards_for_session(
 
     # Dealer runs first — gates player detection to avoid false positives
     if config.dealer_roi is not None:
+        fh, fw = frame.shape[:2]
+        x1, y1, x2, y2 = config.dealer_roi
+        logger.debug(
+            "Dealer ROI (%d,%d,%d,%d) on frame %dx%d",
+            x1,
+            y1,
+            x2,
+            y2,
+            fw,
+            fh,
+        )
         dealer_cards = detect_cards_in_roi(
             frame, config.dealer_roi, dealer_templates, config.card_threshold
         )
         session_result["dealer"] = dealer_cards
         if not dealer_cards:
+            logger.debug(
+                "No dealer cards found at frame %d — treating as false-positive replay trigger",
+                frame_idx,
+            )
             return None
         logger.debug("Dealer cards: %s", dealer_cards)
     else:
@@ -357,10 +413,22 @@ class LiveVideoProcessor:
         self.frame_index = 0
         self.session_num = 1
         self.replay_active = False
+        self._log_interval = 100  # log replay score every N frames
 
     def process_frame(self, frame: np.ndarray) -> dict | None:
         """Process a single incoming frame and return a session dict if detected."""
         self.buffer.append((self.frame_index, frame.copy()))
+
+        # Log frame resolution on the very first frame as a sanity check
+        if self.frame_index == 0:
+            h, w = frame.shape[:2]
+            logger.info(
+                "LiveVideoProcessor: first frame — %dx%d (w×h), profile replay_roi=%s, dealer_roi=%s",
+                w,
+                h,
+                self.config.replay_roi,
+                self.config.dealer_roi,
+            )
 
         if self.config.replay_roi is not None:
             x1, y1, x2, y2 = self.config.replay_roi
@@ -369,6 +437,27 @@ class LiveVideoProcessor:
             search_region = frame
 
         gray_region = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
+
+        if (
+            gray_region.shape[0] < self.replay_template_img.shape[0]  # type: ignore
+            or gray_region.shape[1] < self.replay_template_img.shape[1]  # type: ignore
+        ):  # type: ignore[union-attr]
+            if self.frame_index % self._log_interval == 0:
+                fh, fw = frame.shape[:2]
+                logger.warning(
+                    "Replay template (%dx%d) is larger than the search region (%dx%d) "
+                    "cut from frame %dx%d with roi=%s — replay detection will never fire",
+                    self.replay_template_img.shape[1],  # type: ignore
+                    self.replay_template_img.shape[0],  # type: ignore
+                    gray_region.shape[1],
+                    gray_region.shape[0],
+                    fw,
+                    fh,
+                    self.config.replay_roi,
+                )
+            self.frame_index += 1
+            return None
+
         match_result = cv2.matchTemplate(
             gray_region,
             self.replay_template_img,  # type: ignore
@@ -376,11 +465,30 @@ class LiveVideoProcessor:
         )
         _, max_val, _, _ = cv2.minMaxLoc(match_result)
 
+        # Periodic score log so we can see how close we are to the threshold
+        if self.frame_index % self._log_interval == 0:
+            logger.debug(
+                "Frame %d: replay match score=%.4f (threshold=%.2f, active=%s)",
+                self.frame_index,
+                max_val,
+                self.config.replay_threshold,
+                self.replay_active,
+            )
+
         session_result_out = None
 
         if max_val >= self.config.replay_threshold and not self.replay_active:
             self.replay_active = True
             target_idx, target_frame = self.buffer[0]
+            logger.info(
+                "Frame %d: replay triggered (score=%.4f >= %.2f), "
+                "running card detection on lookback frame %d (buffer size=%d)",
+                self.frame_index,
+                max_val,
+                self.config.replay_threshold,
+                target_idx,
+                len(self.buffer),
+            )
 
             session_result = _detect_cards_for_session(
                 target_idx,
