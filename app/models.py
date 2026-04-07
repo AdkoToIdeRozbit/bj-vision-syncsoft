@@ -36,6 +36,7 @@ class CardClass(StrEnum):
 
 class GameResult(SQLModel):
     session_number: int | None = None
+    deck_num: int = 1
     player1_cards: dict[str, list[CardClass]] | None = None
     player2_cards: dict[str, list[CardClass]] | None = None
     player3_cards: dict[str, list[CardClass]] | None = None

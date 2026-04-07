@@ -61,6 +61,9 @@ class VisionConfig:
     card_threshold: float = 0.8
     lookback: int = 5
 
+    cut_card_roi: tuple[int, int, int, int] | None = None
+    cut_card_threshold: float = 0.3
+
 
 # Hard-coded ROI defaults per resolution profile.
 # These come from the .env comments; callers can override thresholds via
@@ -72,6 +75,8 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "dealer_template_dir": str(_VISION_BASE / "480p" / "dealer"),
         "player_template_dir": str(_VISION_BASE / "480p" / "players"),
         "dealer_roi": (230, 83, 290, 91),
+        # TODO: Set the actual cut-card ROI coordinates for 480p footage
+        "cut_card_roi": None,
         "player_rois": {
             "player_1": None,
             "player_2": None,
@@ -88,6 +93,8 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "dealer_template_dir": str(_VISION_BASE / "4k" / "dealer"),
         "player_template_dir": str(_VISION_BASE / "4k" / "players"),
         "dealer_roi": (1070, 560, 1300, 593),
+        # TODO: Set the actual cut-card ROI coordinates for 4k footage
+        "cut_card_roi": (1864, 740, 1975, 810),
         "player_rois": {
             "player_1": PlayerROIConfig(
                 default=(1045, 1183, 1077, 1467),
@@ -131,6 +138,7 @@ def build_vision_config(
     replay_threshold: float = 0.8,
     card_threshold: float = 0.8,
     lookback: int = 5,
+    cut_card_threshold: float = 0.35,
 ) -> VisionConfig:
     """Build a VisionConfig for the given resolution profile."""
     defaults = _PROFILE_DEFAULTS[profile]
@@ -145,6 +153,8 @@ def build_vision_config(
         player_rois=defaults["player_rois"],
         card_threshold=card_threshold,
         lookback=lookback,
+        cut_card_roi=defaults["cut_card_roi"],
+        cut_card_threshold=cut_card_threshold,
     )
 
 
@@ -178,6 +188,28 @@ def load_card_templates(directory: str) -> list[tuple[str, np.ndarray]]:
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
+
+
+def detect_cut_card(
+    frame: np.ndarray,
+    roi: tuple[int, int, int, int],
+    threshold: float = 0.3,
+) -> bool:
+    """Return True when the white cut card is visible inside *roi*.
+
+    Converts the cropped region to HSV and measures the fraction of pixels
+    whose Value channel exceeds 200 (bright-pixel proxy). This is more
+    tolerant of room-lighting variation than a raw RGB white check.
+    """
+    x1, y1, x2, y2 = roi
+    region = frame[y1:y2, x1:x2]
+    if region.size == 0:
+        return False
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    bright_pixels = np.count_nonzero(hsv[:, :, 2] > 200)
+    total_pixels = region.shape[0] * region.shape[1]
+    ratio = bright_pixels / total_pixels
+    return bool(ratio >= threshold)
 
 
 def _merge_detections(
@@ -326,6 +358,27 @@ def _detect_cards_for_session(
 
 
 # ---------------------------------------------------------------------------
+# Debug helpers
+# ---------------------------------------------------------------------------
+
+_DEBUG_DIR = Path(__file__).parent.parent.parent / "data" / "debug_frames"
+
+
+def _save_debug_frame(frame: np.ndarray, frame_index: int, label: str) -> None:
+    """Save *frame* to ``data/debug_frames/<label>_<frame_index>.jpg``.
+
+    Failures are logged at WARNING level and never propagate to the caller.
+    """
+    try:
+        _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        filename = _DEBUG_DIR / f"{label}_{frame_index:08d}.jpg"
+        cv2.imwrite(str(filename), frame)
+        logger.debug("Debug frame saved: %s", filename)
+    except Exception as exc:
+        logger.warning("Could not save debug frame: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main video processing
 # ---------------------------------------------------------------------------
 
@@ -358,9 +411,38 @@ class LiveVideoProcessor:
         self.session_num = 1
         self.replay_active = False
 
+        # Cut-card / deck-swap state
+        # pending_deck_swap is set when the white cut card is seen and cleared
+        # after the current game session's result is emitted.  deck_num starts
+        # at 1 and increments at each session boundary where a swap was detected.
+        self.pending_deck_swap: bool = False
+        self.deck_num: int = 1
+
     def process_frame(self, frame: np.ndarray) -> dict | None:
         """Process a single incoming frame and return a session dict if detected."""
         self.buffer.append((self.frame_index, frame.copy()))
+
+        # ------------------------------------------------------------------
+        # Cut-card detection — runs every frame while not already pending.
+        # Once the cut card is spotted we stop looking until the current
+        # game session ends so we don't double-count.
+        # ------------------------------------------------------------------
+        if (
+            self.config.cut_card_roi is not None
+            and not self.pending_deck_swap
+            and detect_cut_card(
+                frame,
+                self.config.cut_card_roi,
+                self.config.cut_card_threshold,
+            )
+        ):
+            self.pending_deck_swap = True
+            logger.warning(
+                "Frame %d: white cut card detected — deck swap pending after session %d",
+                self.frame_index,
+                self.session_num,
+            )
+            _save_debug_frame(frame, self.frame_index, "cut_card")
 
         if self.config.replay_roi is not None:
             x1, y1, x2, y2 = self.config.replay_roi
@@ -397,8 +479,24 @@ class LiveVideoProcessor:
                     self.frame_index,
                     target_idx,
                 )
-                session_result_out = {"session": self.session_num, **session_result}
+                session_result_out = {
+                    "session": self.session_num,
+                    "deck_num": self.deck_num,
+                    **session_result,
+                }
                 self.session_num += 1
+
+                # Deck swap: current session was played with deck_num; the
+                # next session will use the new deck.  Reset the flag so
+                # cut-card detection re-arms for the following session.
+                if self.pending_deck_swap:
+                    self.deck_num += 1
+                    self.pending_deck_swap = False
+                    logger.info(
+                        "Deck swap confirmed after session %d — now on deck %d",
+                        self.session_num - 1,
+                        self.deck_num,
+                    )
 
         elif max_val < self.config.replay_threshold and self.replay_active:
             self.replay_active = False

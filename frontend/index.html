@@ -14,6 +14,7 @@
             --primary-hover: #2563eb;
             --success: #10b981;
             --danger: #ef4444;
+            --warning: #f59e0b;
             --border: #334155;
             --font-family: 'Inter', system-ui, -apple-system, sans-serif;
         }
@@ -214,6 +215,17 @@
             font-weight: 600;
             margin-bottom: 0.25rem;
         }
+
+        .deck-swap-separator {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--warning);
+            background: rgba(245, 158, 11, 0.08);
+            border-left: 3px solid var(--warning);
+            letter-spacing: 0.02em;
+        }
         
         .result-details {
             color: var(--text-muted);
@@ -383,6 +395,7 @@
         let framesSent = 0;
         let lastFrameTime = performance.now();
         let fps = 0;
+        let lastDeckNum = 1;
 
         // Video selection
         DOM.videoFile.addEventListener('change', (e) => {
@@ -402,6 +415,17 @@
         function appendResult(data) {
             if (DOM.resultsBox.children.length > 0 && DOM.resultsBox.children[0].tagName !== 'DIV') {
                 DOM.resultsBox.innerHTML = ''; // clear waiting
+            }
+
+            const deckNum = (data.data && data.data.deck_num != null) ? data.data.deck_num : 1;
+
+            // Insert a deck-swap separator when the deck number increases
+            if (deckNum > lastDeckNum) {
+                const sep = document.createElement('div');
+                sep.className = 'deck-swap-separator';
+                sep.textContent = `\u{1F0A0} Deck Swap \u2192 Deck ${deckNum}`;
+                DOM.resultsBox.prepend(sep);
+                lastDeckNum = deckNum;
             }
 
             const item = document.createElement('div');
@@ -438,7 +462,7 @@
             }
 
             item.innerHTML = `
-                <div class="result-title">Session: ${data.session_number} | Frame: ${data.frame_index}</div>
+                <div class="result-title">Session: ${data.session_number} &nbsp;|&nbsp; Deck: ${deckNum} &nbsp;|&nbsp; Frame: ${data.frame_index}</div>
                 <div class="result-details">
                     Dealer: <strong>${formatCards(data.data.dealer_cards)}</strong>
                     ${playersHtml}
@@ -524,6 +548,7 @@
                     DOM.resultsBox.innerHTML = '';
                     isStreaming = true;
                     framesSent = 0;
+                    lastDeckNum = 1;
                     DOM.fpsCounter.dataset.lastCount = 0;
                     lastFrameTime = performance.now();
                     

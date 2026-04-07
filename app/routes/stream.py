@@ -97,6 +97,7 @@ async def stream_video_for_processing(
                 # Save to database
                 game_result = GameResult(
                     session_number=result.get("session"),
+                    deck_num=result.get("deck_num", 1),
                     dealer_cards=map_card_names(result.get("dealer", [])),
                     player1_cards=map_player_hands(result.get("player_1", {})),
                     player2_cards=map_player_hands(result.get("player_2", {})),
