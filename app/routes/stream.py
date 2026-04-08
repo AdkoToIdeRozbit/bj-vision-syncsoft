@@ -135,7 +135,7 @@ async def stream_video_for_processing(
             task.updated_at = datetime.now(timezone.utc)
             session.add(task)
             session.commit()
-        except:
+        except:  # noqa: E722
             pass
     finally:
         # If not failed, mark as completed

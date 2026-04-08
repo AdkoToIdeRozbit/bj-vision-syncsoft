@@ -125,6 +125,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
             for r in results:
                 game_result = GameResult(
                     session_number=r.get("session"),
+                    deck_num=r.get("deck_num", 1),
                     dealer_cards=map_card_names(r.get("dealer", [])),
                     player1_cards=map_player_hands(r.get("player_1", {})),
                     player2_cards=map_player_hands(r.get("player_2", {})),

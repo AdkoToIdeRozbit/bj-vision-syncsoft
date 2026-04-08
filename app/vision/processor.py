@@ -62,7 +62,7 @@ class VisionConfig:
     lookback: int = 5
 
     cut_card_roi: tuple[int, int, int, int] | None = None
-    cut_card_threshold: float = 0.3
+    cut_card_threshold: float = 0.15
 
 
 # Hard-coded ROI defaults per resolution profile.
@@ -94,7 +94,7 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "player_template_dir": str(_VISION_BASE / "4k" / "players"),
         "dealer_roi": (1070, 560, 1300, 593),
         # TODO: Set the actual cut-card ROI coordinates for 4k footage
-        "cut_card_roi": (1864, 740, 1975, 810),
+        "cut_card_roi": (1864, 740, 1985, 830),
         "player_rois": {
             "player_1": PlayerROIConfig(
                 default=(1045, 1183, 1077, 1467),
@@ -138,7 +138,7 @@ def build_vision_config(
     replay_threshold: float = 0.8,
     card_threshold: float = 0.8,
     lookback: int = 5,
-    cut_card_threshold: float = 0.35,
+    cut_card_threshold: float = 0.15,
 ) -> VisionConfig:
     """Build a VisionConfig for the given resolution profile."""
     defaults = _PROFILE_DEFAULTS[profile]
@@ -193,23 +193,75 @@ def load_card_templates(directory: str) -> list[tuple[str, np.ndarray]]:
 def detect_cut_card(
     frame: np.ndarray,
     roi: tuple[int, int, int, int],
-    threshold: float = 0.3,
+    threshold: float = 0.15,
 ) -> bool:
     """Return True when the white cut card is visible inside *roi*.
 
-    Converts the cropped region to HSV and measures the fraction of pixels
-    whose Value channel exceeds 200 (bright-pixel proxy). This is more
-    tolerant of room-lighting variation than a raw RGB white check.
+    Uses a connected-component (blob) approach rather than aggregate pixel
+    ratios, exploiting the structural difference between the white cut card
+    and caro-pattern card backs:
+
+    - **White cut card**: one large, compact, near-uniform white region.
+    - **Caro card back**: many small white blobs scattered between the
+      blue/red diamonds — no single blob is large.
+
+    Algorithm:
+    1. Convert to HSV and build a binary mask: pixels bright (V > 200)
+       *and* near-achromatic (S < 80).  This captures white/cream-tinted
+       pixels while excluding vivid skin, diamonds, and table surfaces.
+    2. Lightly dilate the mask to bridge small gaps caused by the card's
+       tilted edge or slight motion blur.
+    3. Find connected components.  If the *largest* single blob covers at
+       least *threshold* fraction of the total ROI area, the cut card is
+       present.
+
+    *threshold* (default 0.15) means the biggest white blob must occupy
+    ≥ 15 % of the ROI.  A caro card's largest white fragment is typically
+    < 5 %; the cut card, even partially obscured by the dealer's hand,
+    consistently exceeds 15 %.
+
+    Additionally, the largest blob must **not** be left-edge-connected without
+    also being right-edge-connected.  The cut card sits inside the shoe on the
+    *right* side of the ROI, so its blob always reaches the right border.  The
+    dealer's shirt/sleeve enters the ROI from the dealer's body on the *left*,
+    producing a blob that touches only the left edge.  Discarding those blobs
+    eliminates that class of false positives without affecting true detections.
     """
     x1, y1, x2, y2 = roi
     region = frame[y1:y2, x1:x2]
     if region.size == 0:
         return False
+
     hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-    bright_pixels = np.count_nonzero(hsv[:, :, 2] > 200)
+    mask = np.uint8((hsv[:, :, 2] > 200) & (hsv[:, :, 1] < 80)) * 255
+
+    # Small dilation bridges sub-pixel gaps on the card's tilted edge
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.dilate(mask, kernel, iterations=1)  # type: ignore
+
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n_labels < 2:
+        return False
+
+    # stats row 0 is the background; ignore it
+    foreground_stats = stats[1:]
+    largest_label = int(foreground_stats[:, cv2.CC_STAT_AREA].argmax()) + 1
+    largest_blob_area = int(foreground_stats[largest_label - 1, cv2.CC_STAT_AREA])
     total_pixels = region.shape[0] * region.shape[1]
-    ratio = bright_pixels / total_pixels
-    return bool(ratio >= threshold)
+
+    if largest_blob_area / total_pixels < threshold:
+        return False
+
+    # Reject if the largest blob is left-border-connected but NOT right-border-
+    # connected.  The cut card sits inside the shoe on the right side of the
+    # ROI — its blob always reaches the right edge.  The dealer's shirt/sleeve
+    # enters from the dealer's body on the left, producing a blob that touches
+    # the left edge only.
+    blob_mask = labels == largest_label
+    if blob_mask[:, 0].any() and not blob_mask[:, -1].any():
+        return False
+
+    return True
 
 
 def _merge_detections(
@@ -474,8 +526,9 @@ class LiveVideoProcessor:
 
             if session_result is not None:
                 logger.info(
-                    "Session %d: replay at frame %d, cards detected at frame %d",
+                    "Session %d - Deck %d: replay at frame %d, cards detected at frame %d",
                     self.session_num,
+                    self.deck_num,
                     self.frame_index,
                     target_idx,
                 )
@@ -497,6 +550,9 @@ class LiveVideoProcessor:
                         self.session_num - 1,
                         self.deck_num,
                     )
+
+                    # Reset the session counter to 1 when the deck number increments, so the session numbers are per-deck and easier to correlate with physical shoe changes in the footage.
+                    self.session_num = 1
 
         elif max_val < self.config.replay_threshold and self.replay_active:
             self.replay_active = False
@@ -539,12 +595,13 @@ def process_video(
             )
 
     logger.info(
-        "Processing video: %s  [%dx%d]  replay_threshold=%.2f  card_threshold=%.2f",
+        "Processing video: %s  [%dx%d]  replay_threshold=%.2f  card_threshold=%.2f  cut_card_threshold=%.2f",
         config.video_path,
         frame_width,
         frame_height,
         config.replay_threshold,
         config.card_threshold,
+        config.cut_card_threshold,
     )
 
     results: list[dict] = []
