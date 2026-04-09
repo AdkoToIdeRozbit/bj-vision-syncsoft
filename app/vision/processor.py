@@ -470,6 +470,15 @@ class LiveVideoProcessor:
         self.pending_deck_swap: bool = False
         self.deck_num: int = 1
 
+        # Consecutive-swap cancellation: if two back-to-back sessions both
+        # trigger a deck swap the first was a false positive.  We save the
+        # pre-swap state here and restore it if the very next session also
+        # fires a swap, so the emitted result is stamped with the correct
+        # deck/session numbers before the real swap is applied.
+        self._last_session_swapped: bool = False
+        self._pre_swap_deck_num: int = 1
+        self._pre_swap_session_num: int = 1
+
     def process_frame(self, frame: np.ndarray) -> dict | None:
         """Process a single incoming frame and return a session dict if detected."""
         self.buffer.append((self.frame_index, frame.copy()))
@@ -525,6 +534,23 @@ class LiveVideoProcessor:
             )
 
             if session_result is not None:
+                # Consecutive-swap cancellation: if the previous session also
+                # triggered a deck swap AND this session triggers one too, the
+                # previous swap was a false positive.  Restore the pre-swap
+                # deck/session state before stamping this result so the emitted
+                # dict carries the correct numbers.
+                if self.pending_deck_swap and self._last_session_swapped:
+                    logger.warning(
+                        "Frame %d: two consecutive deck-swap triggers detected — "
+                        "cancelling previous false-positive swap (restoring deck %d, session %d)",
+                        self.frame_index,
+                        self._pre_swap_deck_num,
+                        self._pre_swap_session_num,
+                    )
+                    self.deck_num = self._pre_swap_deck_num
+                    self.session_num = self._pre_swap_session_num
+                    self._last_session_swapped = False
+
                 logger.info(
                     "Session %d - Deck %d: replay at frame %d, cards detected at frame %d",
                     self.session_num,
@@ -543,8 +569,12 @@ class LiveVideoProcessor:
                 # next session will use the new deck.  Reset the flag so
                 # cut-card detection re-arms for the following session.
                 if self.pending_deck_swap:
+                    # Save undo state before modifying deck/session counters.
+                    self._pre_swap_deck_num = self.deck_num
+                    self._pre_swap_session_num = self.session_num
                     self.deck_num += 1
                     self.pending_deck_swap = False
+                    self._last_session_swapped = True
                     logger.info(
                         "Deck swap confirmed after session %d — now on deck %d",
                         self.session_num - 1,
@@ -553,6 +583,8 @@ class LiveVideoProcessor:
 
                     # Reset the session counter to 1 when the deck number increments, so the session numbers are per-deck and easier to correlate with physical shoe changes in the footage.
                     self.session_num = 1
+                else:
+                    self._last_session_swapped = False
 
         elif max_val < self.config.replay_threshold and self.replay_active:
             self.replay_active = False

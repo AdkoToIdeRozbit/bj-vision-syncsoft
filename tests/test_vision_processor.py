@@ -485,3 +485,58 @@ def test_live_processor_cut_card_not_checked_while_pending():
 
     mock_dcc.assert_not_called()
     _cleanup(tmp)
+
+
+def test_live_processor_consecutive_deck_swaps_undoes_first():
+    """If two consecutive sessions both trigger a deck swap, the first swap is a
+    false positive.  The processor should cancel it and stamp the second session
+    with the pre-undo deck/session numbers before applying the real swap."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from app.vision.processor import LiveVideoProcessor
+
+    roi = (0, 0, 10, 10)
+    cfg, tmp = _make_live_processor_mock_config(cut_card_roi=roi)
+    processor = LiveVideoProcessor(cfg, [], [])
+
+    # Simulate state after a false first swap:
+    #   deck 1 → (false swap) → deck 2, session_num reset to 1
+    #   The last valid session was session 3 of deck 1.
+    processor.deck_num = 2
+    processor.session_num = 1
+    processor.pending_deck_swap = True  # cut card already seen again
+    processor._last_session_swapped = True  # first swap just fired
+    processor._pre_swap_deck_num = 1  # deck before the false swap
+    processor._pre_swap_session_num = (
+        3  # session_num (post-increment) before the false swap reset
+    )
+
+    with patch("app.vision.processor._detect_cards_for_session") as mock_detect:
+        mock_detect.return_value = {
+            "frame": 0,
+            "dealer": ["king"],
+            "player_1": {},
+            "player_2": {},
+            "player_3": {},
+            "player_4": {},
+            "player_5": {},
+            "player_6": {},
+            "player_7": {},
+        }
+        with patch("app.vision.processor.detect_cut_card", return_value=False):
+            with patch("cv2.matchTemplate") as mock_mt:
+                mock_mt.return_value = np.full((1, 1), 0.9)  # replay fires
+                frame = np.zeros((10, 10, 3), dtype="uint8")
+                result = processor.process_frame(frame)
+
+    # The false swap is undone: result should be stamped with deck 1, session 3
+    assert result is not None
+    assert result["deck_num"] == 1
+    assert result["session"] == 3
+    # The real swap is then applied: next session will be deck 2, session 1
+    assert processor.deck_num == 2
+    assert processor.session_num == 1
+    assert processor._last_session_swapped is True
+    _cleanup(tmp)
