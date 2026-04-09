@@ -103,6 +103,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
                 profile=profile,  # type: ignore[arg-type]
                 replay_threshold=settings.REPLAY_THRESHOLD,
                 card_threshold=settings.CARD_THRESHOLD,
+                cut_card_threshold=settings.CUT_CARD_THRESHOLD,
             )
             dealer_templates = load_card_templates(vision_config.dealer_template_dir)
             player_templates = load_card_templates(vision_config.player_template_dir)

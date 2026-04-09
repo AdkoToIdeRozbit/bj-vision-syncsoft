@@ -81,6 +81,7 @@ Additional settings (with defaults) from `app/core/config.py`:
 - `MAX_UPLOAD_MB=512`
 - `REPLAY_THRESHOLD=0.8` — confidence threshold for replay-button detection
 - `CARD_THRESHOLD=0.8` — confidence threshold for card template matching
+- `CUT_CARD_THRESHOLD=0.15` — minimum white-blob fraction for cut-card detection (see [Cut Card & Deck Tracking](#cut-card--deck-tracking) below)
 
 ## Database and Migrations
 
@@ -165,10 +166,23 @@ When a video is uploaded, the background worker:
 
 1. Updates the task status to `processing`
 2. Loads the card and replay-button templates for the selected resolution profile from `app/vision/template-images/`
-3. Scans the video frame-by-frame for the replay button (using OpenCV template matching) to detect session boundaries
+3. Scans the video frame-by-frame for the replay button (using OpenCV template matching) to detect session boundaries; simultaneously monitors the cut-card ROI to track physical shoe changes (see [Cut Card & Deck Tracking](#cut-card--deck-tracking))
 4. For each detected session-ending frame, identifies dealer and player cards via template matching, with split-hand support (see below)
-5. Persists each detected game as a `blackjack_game_session` row (JSON result with cards per player/dealer)
+5. Persists each detected game as a `blackjack_game_session` row (JSON result with cards per player/dealer, plus `session_number` and `deck_num`)
 6. Updates the task status to `completed` (or `failed` on error)
+
+### Cut Card & Deck Tracking
+
+The processor watches a configurable `cut_card_roi` for the white plastic cut card that signals the end of a shoe. Detection uses a connected-component (blob) analysis on HSV-filtered frames:
+
+1. Pixels that are bright (`V > 200`) **and** near-achromatic (`S < 80`) are extracted into a binary mask.
+2. The mask is lightly dilated to bridge gaps from motion blur or the card's tilted edge.
+3. The largest white blob is measured. If it covers at least `CUT_CARD_THRESHOLD` (default 15 %) of the ROI area the cut card is considered present.
+4. **Left-edge rejection**: blobs that touch only the left border (dealer's shirt/sleeve) are discarded; the real cut card always reaches the right border of the ROI (inside the shoe).
+
+When the cut card is detected, a `pending_deck_swap` flag is set. At the next session boundary the `deck_num` counter increments and the per-shoe `session_number` resets to 1. Emitted results carry both fields so every hand can be correlated with its physical shoe.
+
+**Consecutive-swap cancellation**: if two back-to-back sessions both trigger a deck swap (possible when the cut card lingers across a session boundary), the *first* swap is treated as a false positive. The processor maintains an undo snapshot of the pre-swap counters and automatically restores them before applying the second (real) swap, ensuring `deck_num` and `session_number` are stamped correctly on both results.
 
 ### Split Hand Detection
 
