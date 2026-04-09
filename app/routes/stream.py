@@ -60,6 +60,7 @@ async def stream_video_for_processing(
             replay_threshold=settings.REPLAY_THRESHOLD,
             card_threshold=settings.CARD_THRESHOLD,
             lookback=lookback,
+            cut_card_threshold=settings.CUT_CARD_THRESHOLD,
         )
         dealer_templates = load_card_templates(vision_config.dealer_template_dir)
         player_templates = load_card_templates(vision_config.player_template_dir)
@@ -97,6 +98,7 @@ async def stream_video_for_processing(
                 # Save to database
                 game_result = GameResult(
                     session_number=result.get("session"),
+                    deck_num=result.get("deck_num", 1),
                     dealer_cards=map_card_names(result.get("dealer", [])),
                     player1_cards=map_player_hands(result.get("player_1", {})),
                     player2_cards=map_player_hands(result.get("player_2", {})),
@@ -134,7 +136,7 @@ async def stream_video_for_processing(
             task.updated_at = datetime.now(timezone.utc)
             session.add(task)
             session.commit()
-        except:
+        except:  # noqa: E722
             pass
     finally:
         # If not failed, mark as completed

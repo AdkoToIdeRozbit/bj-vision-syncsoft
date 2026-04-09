@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     REPLAY_THRESHOLD: float = 0.8
     CARD_THRESHOLD: float = 0.8
+    CUT_CARD_THRESHOLD: float = 0.15
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)

@@ -61,6 +61,9 @@ class VisionConfig:
     card_threshold: float = 0.8
     lookback: int = 5
 
+    cut_card_roi: tuple[int, int, int, int] | None = None
+    cut_card_threshold: float = 0.15
+
 
 # Hard-coded ROI defaults per resolution profile.
 # These come from the .env comments; callers can override thresholds via
@@ -72,6 +75,8 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "dealer_template_dir": str(_VISION_BASE / "480p" / "dealer"),
         "player_template_dir": str(_VISION_BASE / "480p" / "players"),
         "dealer_roi": (230, 83, 290, 91),
+        # TODO: Set the actual cut-card ROI coordinates for 480p footage
+        "cut_card_roi": None,
         "player_rois": {
             "player_1": None,
             "player_2": None,
@@ -88,6 +93,8 @@ _PROFILE_DEFAULTS: dict[str, dict] = {
         "dealer_template_dir": str(_VISION_BASE / "4k" / "dealer"),
         "player_template_dir": str(_VISION_BASE / "4k" / "players"),
         "dealer_roi": (1070, 560, 1300, 593),
+        # TODO: Set the actual cut-card ROI coordinates for 4k footage
+        "cut_card_roi": (1864, 740, 1985, 830),
         "player_rois": {
             "player_1": PlayerROIConfig(
                 default=(1045, 1183, 1077, 1467),
@@ -131,6 +138,7 @@ def build_vision_config(
     replay_threshold: float = 0.8,
     card_threshold: float = 0.8,
     lookback: int = 5,
+    cut_card_threshold: float = 0.15,
 ) -> VisionConfig:
     """Build a VisionConfig for the given resolution profile."""
     defaults = _PROFILE_DEFAULTS[profile]
@@ -145,6 +153,8 @@ def build_vision_config(
         player_rois=defaults["player_rois"],
         card_threshold=card_threshold,
         lookback=lookback,
+        cut_card_roi=defaults["cut_card_roi"],
+        cut_card_threshold=cut_card_threshold,
     )
 
 
@@ -178,6 +188,80 @@ def load_card_templates(directory: str) -> list[tuple[str, np.ndarray]]:
 # ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
+
+
+def detect_cut_card(
+    frame: np.ndarray,
+    roi: tuple[int, int, int, int],
+    threshold: float = 0.15,
+) -> bool:
+    """Return True when the white cut card is visible inside *roi*.
+
+    Uses a connected-component (blob) approach rather than aggregate pixel
+    ratios, exploiting the structural difference between the white cut card
+    and caro-pattern card backs:
+
+    - **White cut card**: one large, compact, near-uniform white region.
+    - **Caro card back**: many small white blobs scattered between the
+      blue/red diamonds — no single blob is large.
+
+    Algorithm:
+    1. Convert to HSV and build a binary mask: pixels bright (V > 200)
+       *and* near-achromatic (S < 80).  This captures white/cream-tinted
+       pixels while excluding vivid skin, diamonds, and table surfaces.
+    2. Lightly dilate the mask to bridge small gaps caused by the card's
+       tilted edge or slight motion blur.
+    3. Find connected components.  If the *largest* single blob covers at
+       least *threshold* fraction of the total ROI area, the cut card is
+       present.
+
+    *threshold* (default 0.15) means the biggest white blob must occupy
+    ≥ 15 % of the ROI.  A caro card's largest white fragment is typically
+    < 5 %; the cut card, even partially obscured by the dealer's hand,
+    consistently exceeds 15 %.
+
+    Additionally, the largest blob must **not** be left-edge-connected without
+    also being right-edge-connected.  The cut card sits inside the shoe on the
+    *right* side of the ROI, so its blob always reaches the right border.  The
+    dealer's shirt/sleeve enters the ROI from the dealer's body on the *left*,
+    producing a blob that touches only the left edge.  Discarding those blobs
+    eliminates that class of false positives without affecting true detections.
+    """
+    x1, y1, x2, y2 = roi
+    region = frame[y1:y2, x1:x2]
+    if region.size == 0:
+        return False
+
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    mask = np.uint8((hsv[:, :, 2] > 200) & (hsv[:, :, 1] < 80)) * 255
+
+    # Small dilation bridges sub-pixel gaps on the card's tilted edge
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.dilate(mask, kernel, iterations=1)  # type: ignore
+
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n_labels < 2:
+        return False
+
+    # stats row 0 is the background; ignore it
+    foreground_stats = stats[1:]
+    largest_label = int(foreground_stats[:, cv2.CC_STAT_AREA].argmax()) + 1
+    largest_blob_area = int(foreground_stats[largest_label - 1, cv2.CC_STAT_AREA])
+    total_pixels = region.shape[0] * region.shape[1]
+
+    if largest_blob_area / total_pixels < threshold:
+        return False
+
+    # Reject if the largest blob is left-border-connected but NOT right-border-
+    # connected.  The cut card sits inside the shoe on the right side of the
+    # ROI — its blob always reaches the right edge.  The dealer's shirt/sleeve
+    # enters from the dealer's body on the left, producing a blob that touches
+    # the left edge only.
+    blob_mask = labels == largest_label
+    if blob_mask[:, 0].any() and not blob_mask[:, -1].any():
+        return False
+
+    return True
 
 
 def _merge_detections(
@@ -326,6 +410,27 @@ def _detect_cards_for_session(
 
 
 # ---------------------------------------------------------------------------
+# Debug helpers
+# ---------------------------------------------------------------------------
+
+_DEBUG_DIR = Path(__file__).parent.parent.parent / "data" / "debug_frames"
+
+
+def _save_debug_frame(frame: np.ndarray, frame_index: int, label: str) -> None:
+    """Save *frame* to ``data/debug_frames/<label>_<frame_index>.jpg``.
+
+    Failures are logged at WARNING level and never propagate to the caller.
+    """
+    try:
+        _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        filename = _DEBUG_DIR / f"{label}_{frame_index:08d}.jpg"
+        cv2.imwrite(str(filename), frame)
+        logger.debug("Debug frame saved: %s", filename)
+    except Exception as exc:
+        logger.warning("Could not save debug frame: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main video processing
 # ---------------------------------------------------------------------------
 
@@ -358,9 +463,47 @@ class LiveVideoProcessor:
         self.session_num = 1
         self.replay_active = False
 
+        # Cut-card / deck-swap state
+        # pending_deck_swap is set when the white cut card is seen and cleared
+        # after the current game session's result is emitted.  deck_num starts
+        # at 1 and increments at each session boundary where a swap was detected.
+        self.pending_deck_swap: bool = False
+        self.deck_num: int = 1
+
+        # Consecutive-swap cancellation: if two back-to-back sessions both
+        # trigger a deck swap the first was a false positive.  We save the
+        # pre-swap state here and restore it if the very next session also
+        # fires a swap, so the emitted result is stamped with the correct
+        # deck/session numbers before the real swap is applied.
+        self._last_session_swapped: bool = False
+        self._pre_swap_deck_num: int = 1
+        self._pre_swap_session_num: int = 1
+
     def process_frame(self, frame: np.ndarray) -> dict | None:
         """Process a single incoming frame and return a session dict if detected."""
         self.buffer.append((self.frame_index, frame.copy()))
+
+        # ------------------------------------------------------------------
+        # Cut-card detection — runs every frame while not already pending.
+        # Once the cut card is spotted we stop looking until the current
+        # game session ends so we don't double-count.
+        # ------------------------------------------------------------------
+        if (
+            self.config.cut_card_roi is not None
+            and not self.pending_deck_swap
+            and detect_cut_card(
+                frame,
+                self.config.cut_card_roi,
+                self.config.cut_card_threshold,
+            )
+        ):
+            self.pending_deck_swap = True
+            logger.warning(
+                "Frame %d: white cut card detected — deck swap pending after session %d",
+                self.frame_index,
+                self.session_num,
+            )
+            _save_debug_frame(frame, self.frame_index, "cut_card")
 
         if self.config.replay_roi is not None:
             x1, y1, x2, y2 = self.config.replay_roi
@@ -391,14 +534,57 @@ class LiveVideoProcessor:
             )
 
             if session_result is not None:
+                # Consecutive-swap cancellation: if the previous session also
+                # triggered a deck swap AND this session triggers one too, the
+                # previous swap was a false positive.  Restore the pre-swap
+                # deck/session state before stamping this result so the emitted
+                # dict carries the correct numbers.
+                if self.pending_deck_swap and self._last_session_swapped:
+                    logger.warning(
+                        "Frame %d: two consecutive deck-swap triggers detected — "
+                        "cancelling previous false-positive swap (restoring deck %d, session %d)",
+                        self.frame_index,
+                        self._pre_swap_deck_num,
+                        self._pre_swap_session_num,
+                    )
+                    self.deck_num = self._pre_swap_deck_num
+                    self.session_num = self._pre_swap_session_num
+                    self._last_session_swapped = False
+
                 logger.info(
-                    "Session %d: replay at frame %d, cards detected at frame %d",
+                    "Session %d - Deck %d: replay at frame %d, cards detected at frame %d",
                     self.session_num,
+                    self.deck_num,
                     self.frame_index,
                     target_idx,
                 )
-                session_result_out = {"session": self.session_num, **session_result}
+                session_result_out = {
+                    "session": self.session_num,
+                    "deck_num": self.deck_num,
+                    **session_result,
+                }
                 self.session_num += 1
+
+                # Deck swap: current session was played with deck_num; the
+                # next session will use the new deck.  Reset the flag so
+                # cut-card detection re-arms for the following session.
+                if self.pending_deck_swap:
+                    # Save undo state before modifying deck/session counters.
+                    self._pre_swap_deck_num = self.deck_num
+                    self._pre_swap_session_num = self.session_num
+                    self.deck_num += 1
+                    self.pending_deck_swap = False
+                    self._last_session_swapped = True
+                    logger.info(
+                        "Deck swap confirmed after session %d — now on deck %d",
+                        self.session_num - 1,
+                        self.deck_num,
+                    )
+
+                    # Reset the session counter to 1 when the deck number increments, so the session numbers are per-deck and easier to correlate with physical shoe changes in the footage.
+                    self.session_num = 1
+                else:
+                    self._last_session_swapped = False
 
         elif max_val < self.config.replay_threshold and self.replay_active:
             self.replay_active = False
@@ -441,12 +627,13 @@ def process_video(
             )
 
     logger.info(
-        "Processing video: %s  [%dx%d]  replay_threshold=%.2f  card_threshold=%.2f",
+        "Processing video: %s  [%dx%d]  replay_threshold=%.2f  card_threshold=%.2f  cut_card_threshold=%.2f",
         config.video_path,
         frame_width,
         frame_height,
         config.replay_threshold,
         config.card_threshold,
+        config.cut_card_threshold,
     )
 
     results: list[dict] = []

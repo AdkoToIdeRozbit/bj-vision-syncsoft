@@ -103,6 +103,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
                 profile=profile,  # type: ignore[arg-type]
                 replay_threshold=settings.REPLAY_THRESHOLD,
                 card_threshold=settings.CARD_THRESHOLD,
+                cut_card_threshold=settings.CUT_CARD_THRESHOLD,
             )
             dealer_templates = load_card_templates(vision_config.dealer_template_dir)
             player_templates = load_card_templates(vision_config.player_template_dir)
@@ -125,6 +126,7 @@ def _process_video_bg(task_id: int, video_path: str, profile: str) -> None:
             for r in results:
                 game_result = GameResult(
                     session_number=r.get("session"),
+                    deck_num=r.get("deck_num", 1),
                     dealer_cards=map_card_names(r.get("dealer", [])),
                     player1_cards=map_player_hands(r.get("player_1", {})),
                     player2_cards=map_player_hands(r.get("player_2", {})),
